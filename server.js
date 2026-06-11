@@ -78,6 +78,15 @@ createServer(async (req, res) => {
     return;
   }
 
+  if (requestUrl.startsWith("/api/health")) {
+    sendJson(res, 200, {
+      ok: true,
+      service: "tire-price-compare",
+      timestamp: new Date().toISOString()
+    });
+    return;
+  }
+
   const fullPath = resolveRequestPath(requestUrl);
 
   if (!fullPath) {
