@@ -25,7 +25,7 @@ const state = {
   excludedPlatforms: new Set(),
   selectedItemId: null,
   manualPlatform: "ABC타이어",
-  notice: "기본 예시가 입력되어 있습니다. 자동 검색을 누르면 MVP 수집 결과가 생성됩니다."
+  notice: "기본 예시가 입력되어 있습니다. 현재 MVP의 플랫폼 가격은 실제 수집값이 아니라 예시 가격입니다."
 };
 
 const saved = loadState();
@@ -153,7 +153,7 @@ function render() {
     <header class="topbar">
       <div>
         <h1>타이어 가격 비교</h1>
-        <p>플랫폼별 가격, 배송비, 장착비, 장착 가능 여부를 한 화면에서 비교합니다.</p>
+        <p>플랫폼별 검색 링크와 수동 보정값을 한 화면에서 비교합니다.</p>
       </div>
       <div class="topbar-actions">
         <button class="ghost-button" data-action="clear-storage" title="저장 데이터 초기화">${icon("trash")}초기화</button>
@@ -232,7 +232,7 @@ function renderMetrics(data) {
   return `
     <section class="metric-strip" aria-label="요약">
       <div><span>플랫폼</span><strong>${data.platforms || 0}</strong></div>
-      <div><span>수집 성공</span><strong>${data.success || 0}</strong></div>
+      <div><span>예시/수집</span><strong>${data.success || 0}</strong></div>
       <div><span>수동 확인</span><strong>${data.manual || 0}</strong></div>
       <div><span>비교 상품</span><strong>${data.items || 0}</strong></div>
       <div class="lowest-metric"><span>현재 최저가</span><strong>${data.lowest ? money(data.lowest.totalPrice) : "-"}</strong></div>
@@ -287,7 +287,7 @@ function renderComparePanel() {
       <div class="panel-heading table-heading">
         <div>
           <h2>가격 비교</h2>
-          <p>기본 정렬은 최종 예상 총액 오름차순입니다.</p>
+          <p>예시 가격은 실제 현재가가 아닙니다. 링크 확인 후 수동 보정한 값으로 비교하세요.</p>
         </div>
         <div class="table-controls">
           <label>
@@ -337,7 +337,7 @@ function renderComparePanel() {
               <th>장착점</th>
               <th>수집 상태</th>
               <th>신뢰도</th>
-              <th>상품 링크</th>
+              <th>가격 확인</th>
               <th>메모</th>
             </tr>
           </thead>
@@ -373,7 +373,7 @@ function renderTableRow(item, index, lowest) {
       <td>${escapeHtml(item.shopName || "-")}</td>
       <td><span class="status-pill ${item.fetchStatus}">${labelForStatus(item.fetchStatus)}</span></td>
       <td><span class="confidence ${item.confidence}">${item.confidence}</span></td>
-      <td><a class="link-button" href="${item.productUrl || item.searchUrl}" target="_blank" rel="noreferrer" title="상품 링크">${icon("link")}열기</a></td>
+      <td><a class="link-button" href="${item.productUrl || item.searchUrl}" target="_blank" rel="noreferrer" title="가격 확인 링크">${icon("link")}현재가 확인</a></td>
       <td class="memo-cell">
         <span>${escapeHtml(item.memo || "")}</span>
         <button class="icon-button" data-action="edit-item" data-id="${escapeHtml(item.id)}" title="수동 수정">${icon("edit")}</button>
@@ -404,7 +404,7 @@ function renderManualPanel() {
       <div class="panel-heading">
         <div>
           <h2>수동 보정</h2>
-          <p>실패한 플랫폼은 검색 링크를 확인한 뒤 직접 입력합니다.</p>
+          <p>검색 링크의 현재 가격을 확인한 뒤 직접 입력합니다.</p>
         </div>
       </div>
 
@@ -524,12 +524,12 @@ function handleAction(event) {
 
   if (action === "auto-search") {
     state.results = makeCollectingResults(state.input);
-    state.notice = "플랫폼별 수집을 시작했습니다. MVP에서는 mock 수집 결과와 검색 URL을 함께 제공합니다.";
+    state.notice = "플랫폼별 검색 링크를 생성하고 예시 가격을 표시합니다. 실제 현재가는 링크에서 확인해 수동 보정하세요.";
     persist();
     render();
     window.setTimeout(() => {
       state.results = fetchMockPrices(state.input);
-      state.notice = "수집이 완료되었습니다. 실패한 플랫폼은 수동 보정에서 직접 입력할 수 있습니다.";
+      state.notice = "예시 가격이 표시되었습니다. 상품 링크의 현재가와 다르면 수동 보정에 실제 가격을 입력하세요.";
       persist();
       render();
     }, 550);

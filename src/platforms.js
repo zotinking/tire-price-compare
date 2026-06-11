@@ -2,7 +2,7 @@ import { normalizeItem, specToString } from "./price.js";
 
 export const fetchStatuses = {
   success: "자동 수집 성공",
-  partial: "일부 수집",
+  partial: "예시 가격",
   failed: "수집 실패",
   manual_required: "사용자 확인 필요",
   blocked: "접근 제한 의심",
@@ -100,7 +100,7 @@ function mockFor(platformName, input) {
 
   const map = {
     "다나와": {
-      status: "success",
+      status: "partial",
       items: [
         item("danawa-front", platformName, input, {
           spec: front,
@@ -113,8 +113,8 @@ function mockFor(platformName, input) {
           shopAddress: "경기 수원시 권선구",
           availableDate: "내일",
           productUrl: buildSearchUrl(platforms[0], input),
-          confidence: "high",
-          memo: "상품명, 규격, 배송비가 명확합니다."
+          confidence: "low",
+          memo: "MVP 예시 가격입니다. 링크에서 현재가를 확인해 수동 보정하세요."
         }),
         item("danawa-rear", platformName, input, {
           spec: rear,
@@ -128,8 +128,8 @@ function mockFor(platformName, input) {
           shopAddress: "경기 수원시 권선구",
           availableDate: "내일",
           productUrl: buildSearchUrl(platforms[0], input),
-          confidence: "high",
-          memo: "후륜 규격 별도 계산"
+          confidence: "low",
+          memo: "MVP 예시 가격입니다. 실제 상세가와 다를 수 있습니다."
         })
       ]
     },
@@ -149,7 +149,7 @@ function mockFor(platformName, input) {
           availableDate: "2일 후",
           productUrl: buildSearchUrl(platforms[1], input),
           confidence: "medium",
-          memo: "장착점 가능일은 사용자 확인 필요"
+          memo: "MVP 예시 가격입니다. 장착 가능일과 현재가는 링크 확인 필요"
         })
       ],
       errorMessage: "장착 가능일 일부만 확인되었습니다."
@@ -160,7 +160,7 @@ function mockFor(platformName, input) {
       errorMessage: "동적 페이지라 사용자가 검색 결과를 확인해야 합니다."
     },
     "티스테이션": {
-      status: "success",
+      status: "partial",
       items: [
         item("tstation-set", platformName, input, {
           spec: `${front} / ${rear}`,
@@ -174,8 +174,8 @@ function mockFor(platformName, input) {
           shopAddress: "경기 수원시 팔달구",
           availableDate: "오늘",
           productUrl: buildSearchUrl(platforms[3], input),
-          confidence: "high",
-          memo: "장착비 포함 패키지"
+          confidence: "low",
+          memo: "MVP 예시 가격입니다. 장착비 포함 여부와 현재가를 확인하세요."
         })
       ]
     },
@@ -190,7 +190,7 @@ function mockFor(platformName, input) {
       errorMessage: "브랜드 전용 플랫폼이라 Michelin 검색은 수동 확인이 적합합니다."
     },
     "네이버 쇼핑": {
-      status: "success",
+      status: "partial",
       items: [
         item("naver-front", platformName, input, {
           spec: front,
@@ -204,7 +204,7 @@ function mockFor(platformName, input) {
           availableDate: "확인 필요",
           productUrl: buildSearchUrl(platforms[6], input),
           confidence: "medium",
-          memo: "장착비 포함 여부 확인 필요"
+          memo: "MVP 예시 가격입니다. 검색 결과에서 현재가와 장착비를 확인하세요."
         }),
         item("naver-rear", platformName, input, {
           spec: rear,
@@ -219,7 +219,7 @@ function mockFor(platformName, input) {
           availableDate: "확인 필요",
           productUrl: buildSearchUrl(platforms[6], input),
           confidence: "medium",
-          memo: "배송비와 장착비 별도"
+          memo: "MVP 예시 가격입니다. 배송비와 장착비는 실제 링크 기준으로 보정하세요."
         })
       ]
     },
