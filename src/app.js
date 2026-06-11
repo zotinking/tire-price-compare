@@ -2,6 +2,8 @@ import { calculateTotal, getLowestItem, money, normalizeItem, specToString } fro
 import { clearState, loadState, saveState } from "./storage.js";
 import { fetchMockPrices, fetchStatuses, getPlatforms, makeCollectingResults } from "./platforms.js";
 
+const apiBase = window.TIRE_API_BASE || "";
+
 const defaultInput = {
   vehicleName: "Volvo C40 Recharge",
   frontSpec: { width: "235", aspectRatio: "45", rim: "20" },
@@ -25,7 +27,7 @@ const state = {
   excludedPlatforms: new Set(),
   selectedItemId: null,
   manualPlatform: "ABC타이어",
-  notice: "기본 예시가 입력되어 있습니다. 현재 MVP의 플랫폼 가격은 실제 수집값이 아니라 예시 가격입니다."
+  notice: "기본 예시가 입력되어 있습니다. 자동 검색을 누르면 공개 페이지 기반 실제 수집을 먼저 시도합니다."
 };
 
 const saved = loadState();
@@ -59,6 +61,27 @@ function persist() {
     collapsedPlatforms: [...state.collapsedPlatforms],
     excludedPlatforms: [...state.excludedPlatforms]
   });
+}
+
+async function fetchPrices(input) {
+  const response = await fetch(`${apiBase}/api/fetch-prices`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(input)
+  });
+
+  if (!response.ok) {
+    throw new Error(`가격 수집 API 오류: HTTP ${response.status}`);
+  }
+
+  const payload = await response.json();
+  if (!Array.isArray(payload.results)) {
+    throw new Error("가격 수집 API 응답 형식이 올바르지 않습니다.");
+  }
+
+  return payload;
 }
 
 function icon(name) {
@@ -153,7 +176,7 @@ function render() {
     <header class="topbar">
       <div>
         <h1>타이어 가격 비교</h1>
-        <p>플랫폼별 검색 링크와 수동 보정값을 한 화면에서 비교합니다.</p>
+        <p>공개 페이지 수집 결과와 수동 보정값을 한 화면에서 비교합니다.</p>
       </div>
       <div class="topbar-actions">
         <button class="ghost-button" data-action="clear-storage" title="저장 데이터 초기화">${icon("trash")}초기화</button>
@@ -235,7 +258,7 @@ function renderMetrics(data) {
       <div><span>예시/수집</span><strong>${data.success || 0}</strong></div>
       <div><span>수동 확인</span><strong>${data.manual || 0}</strong></div>
       <div><span>비교 상품</span><strong>${data.items || 0}</strong></div>
-      <div class="lowest-metric"><span>현재 최저가</span><strong>${data.lowest ? money(data.lowest.totalPrice) : "-"}</strong></div>
+      <div class="lowest-metric"><span>후보 최저가</span><strong>${data.lowest ? money(data.lowest.totalPrice) : "-"}</strong></div>
     </section>
   `;
 }
@@ -287,7 +310,7 @@ function renderComparePanel() {
       <div class="panel-heading table-heading">
         <div>
           <h2>가격 비교</h2>
-          <p>예시 가격은 실제 현재가가 아닙니다. 링크 확인 후 수동 보정한 값으로 비교하세요.</p>
+          <p>공개 페이지에서 읽은 후보 가격입니다. 상세 페이지에서 배송비/장착비를 확인하세요.</p>
         </div>
         <div class="table-controls">
           <label>
@@ -524,15 +547,31 @@ function handleAction(event) {
 
   if (action === "auto-search") {
     state.results = makeCollectingResults(state.input);
-    state.notice = "플랫폼별 검색 링크를 생성하고 예시 가격을 표시합니다. 실제 현재가는 링크에서 확인해 수동 보정하세요.";
+    state.notice = "공개 검색 페이지에서 실제 가격 후보를 수집하고 있습니다. 차단되는 플랫폼은 수동 확인으로 표시됩니다.";
     persist();
     render();
-    window.setTimeout(() => {
-      state.results = fetchMockPrices(state.input);
-      state.notice = "예시 가격이 표시되었습니다. 상품 링크의 현재가와 다르면 수동 보정에 실제 가격을 입력하세요.";
-      persist();
-      render();
-    }, 550);
+
+    fetchPrices(state.input)
+      .then((payload) => {
+        state.results = payload.results;
+        state.notice = "실제 수집 시도가 완료되었습니다. 차단/미지원 플랫폼은 검색 링크에서 확인해 수동 보정하세요.";
+        persist();
+        render();
+      })
+      .catch((error) => {
+        state.results = fetchMockPrices(state.input);
+        state.notice = `${error.message}. 현재 환경에서는 예시 가격으로 전환했습니다. 로컬 Node 서버 또는 배포된 백엔드가 필요합니다.`;
+        persist();
+        render();
+      });
+    return;
+  }
+
+  if (action === "demo-search") {
+    state.results = fetchMockPrices(state.input);
+    state.notice = "예시 가격이 표시되었습니다. 실제 현재가는 가격 확인 링크에서 확인해 수동 보정하세요.";
+    persist();
+    render();
     return;
   }
 

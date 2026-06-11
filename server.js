@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { extname, join, normalize } from "node:path";
+import { fetchLivePrices } from "./src/liveAdapters.js";
 
 const port = Number(process.env.PORT || 4173);
 const root = process.cwd();
@@ -13,6 +14,29 @@ const contentTypes = {
   ".svg": "image/svg+xml"
 };
 
+function sendJson(res, status, body) {
+  res.writeHead(status, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Cache-Control": "no-store",
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Methods": "POST, OPTIONS"
+  });
+  res.end(JSON.stringify(body));
+}
+
+async function readJsonBody(req) {
+  const chunks = [];
+  for await (const chunk of req) {
+    chunks.push(chunk);
+    if (Buffer.concat(chunks).length > 1024 * 1024) {
+      throw new Error("Request body too large");
+    }
+  }
+  const raw = Buffer.concat(chunks).toString("utf8");
+  return raw ? JSON.parse(raw) : {};
+}
+
 function resolveRequestPath(urlPath) {
   const cleanPath = decodeURIComponent(urlPath.split("?")[0]);
   const filePath = cleanPath === "/" ? "/index.html" : cleanPath;
@@ -24,7 +48,37 @@ function resolveRequestPath(urlPath) {
 }
 
 createServer(async (req, res) => {
-  const fullPath = resolveRequestPath(req.url || "/");
+  const requestUrl = req.url || "/";
+
+  if (requestUrl.startsWith("/api/fetch-prices")) {
+    if (req.method === "OPTIONS") {
+      sendJson(res, 204, {});
+      return;
+    }
+
+    if (req.method !== "POST") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+
+    try {
+      const input = await readJsonBody(req);
+      const results = await fetchLivePrices(input);
+      sendJson(res, 200, {
+        collectedAt: new Date().toISOString(),
+        mode: "live-public-html",
+        results
+      });
+    } catch (error) {
+      sendJson(res, 500, {
+        error: "가격 수집 중 오류가 발생했습니다.",
+        detail: error.message
+      });
+    }
+    return;
+  }
+
+  const fullPath = resolveRequestPath(requestUrl);
 
   if (!fullPath) {
     res.writeHead(403);
