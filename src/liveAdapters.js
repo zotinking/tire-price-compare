@@ -15,23 +15,23 @@ const platformDefinitions = [
   },
   {
     platformName: "ABC타이어",
-    baseUrl: "https://www.abctire.co.kr/search",
+    baseUrl: "https://abctire.co.kr/tire-search",
     query: "keyword"
   },
   {
     platformName: "티스테이션",
-    baseUrl: "https://www.tstation.com/search",
-    query: "keyword"
+    baseUrl: "https://www.tstation.com/tire/sizes",
+    query: "search"
   },
   {
     platformName: "타이어프로",
-    baseUrl: "https://www.tirepro.co.kr/search",
+    baseUrl: "https://www.tirepro.co.kr/product/list.html",
     query: "keyword"
   },
   {
     platformName: "넥센 넥스트레벨",
-    baseUrl: "https://www.nexentire.com/kr/search",
-    query: "q"
+    baseUrl: "https://www.nexen-nextlevel.com/product/prdList",
+    query: "search"
   },
   {
     platformName: "네이버 쇼핑",
@@ -111,19 +111,20 @@ async function fetchText(url) {
   }
 }
 
-async function fetchJson(url) {
+async function fetchJson(url, options = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
 
   try {
     const response = await fetch(url, {
+      method: options.method || "GET",
       signal: controller.signal,
+      body: options.body,
       headers: {
         "accept": "application/json, text/plain, */*",
         "accept-language": "ko-KR,ko;q=0.9,en-US;q=0.6,en;q=0.4",
-        "origin": "https://www.tire-pick.com",
-        "referer": "https://www.tire-pick.com/",
-        "user-agent": "Mozilla/5.0 (compatible; TirePriceCompareMVP/0.2; +https://github.com/zotinking/tire-price-compare)"
+        "user-agent": "Mozilla/5.0 (compatible; TirePriceCompareMVP/0.2; +https://github.com/zotinking/tire-price-compare)",
+        ...(options.headers || {})
       }
     });
     const text = await response.text();
@@ -139,6 +140,69 @@ async function fetchJson(url) {
   }
 }
 
+async function fetchFormText(url, form, headers = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      signal: controller.signal,
+      body: form,
+      headers: {
+        "accept": "text/html, */*; q=0.01",
+        "accept-language": "ko-KR,ko;q=0.9,en-US;q=0.6,en;q=0.4",
+        "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "user-agent": "Mozilla/5.0 (compatible; TirePriceCompareMVP/0.2; +https://github.com/zotinking/tire-price-compare)",
+        ...headers
+      }
+    });
+    const text = await response.text();
+    return { ok: response.ok, status: response.status, text };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function specTargets(input) {
+  return [
+    { spec: input.frontSpec, quantity: input.frontQuantity || 2, label: "앞" },
+    input.rearSpec ? { spec: input.rearSpec, quantity: input.rearQuantity || 2, label: "뒤" } : null
+  ].filter(Boolean);
+}
+
+function specCompact(spec) {
+  return `${spec.width}${spec.aspectRatio}${spec.rim}`;
+}
+
+function modelTokens(input) {
+  return String(input.modelName || input.keyword || "")
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((token) => token.length >= 2);
+}
+
+function scoreTextCandidate(text, input, spec) {
+  const haystack = String(text || "").toLowerCase();
+  const specText = specToString(spec).toLowerCase();
+  const specMatch =
+    haystack.includes(specText) ||
+    haystack.includes(specCompact(spec).toLowerCase()) ||
+    haystack.replace(/[^\d]/g, "").includes(specCompact(spec));
+  const rawBrand = String(input.brand || "").trim().toLowerCase();
+  const translated = translateBrand(rawBrand).toLowerCase();
+  const brandTerms = Array.from(new Set([rawBrand, translated, translated.replace("타이어", "")])).filter(Boolean);
+  const brandMatch = !brandTerms.length || brandTerms.some((term) => haystack.includes(term));
+  const tokens = modelTokens(input);
+  const modelMatchCount = tokens.filter((token) => haystack.includes(token)).length;
+  const modelMatch = !tokens.length || modelMatchCount >= Math.min(2, tokens.length);
+
+  if (specMatch && brandMatch && modelMatch) return { score: 3, confidence: "high" };
+  if (specMatch && (brandMatch || modelMatch)) return { score: 2, confidence: "medium" };
+  if (specMatch) return { score: 1, confidence: "low" };
+  return { score: 0, confidence: "low" };
+}
+
 function parseDanawaItems(html, input, spec, quantity, searchUrl) {
   const chunks = html.split(/<li[^>]+class="[^"]*prod_item[^"]*"[^>]*>/i).slice(1);
 
@@ -150,16 +214,9 @@ function parseDanawaItems(html, input, spec, quantity, searchUrl) {
       const productName = stripTags(nameHtml);
       const productUrl = decodeHtml(chunk.match(/<p class="prod_name"[\s\S]*?<a\b[^>]*href="([^"]+)"/i)?.[1] || "");
       const specText = specToString(spec);
-      const normalizedName = productName.toLowerCase();
-      const modelTokens = String(input.modelName || input.keyword || "")
-        .toLowerCase()
-        .split(/\s+/)
-        .filter((token) => token.length >= 2);
-      const specMatch = productName.includes(specText);
-      const modelMatchCount = modelTokens.filter((token) => normalizedName.includes(token)).length;
-      const confidence = specMatch && modelMatchCount >= Math.min(2, modelTokens.length) ? "medium" : "low";
+      const { score, confidence } = scoreTextCandidate(productName, input, spec);
 
-      if (!price || !productName) return null;
+      if (!price || !productName || score === 0) return null;
 
       return normalizeItem({
         id: `danawa-live-${specText}-${index}`,
@@ -268,9 +325,13 @@ function scoreTirepickRow(row, input, spec) {
 function translateBrand(brand) {
   const map = {
     michelin: "미쉐린",
-    hankook: "한국타이어",
+    hankook: "한국",
+    "한국": "hankook",
+    "한국타이어": "hankook",
     kumho: "금호",
+    "금호타이어": "kumho",
     nexen: "넥센",
+    "넥센타이어": "nexen",
     pirelli: "피렐리",
     continental: "콘티넨탈",
     bridgestone: "브리지스톤",
@@ -344,10 +405,7 @@ function parseTirepickRows(rows, input, spec, quantity) {
 }
 
 async function fetchTirepick(input) {
-  const specs = [
-    { spec: input.frontSpec, quantity: input.frontQuantity || 2, label: "앞" },
-    input.rearSpec ? { spec: input.rearSpec, quantity: input.rearQuantity || 2, label: "뒤" } : null
-  ].filter(Boolean);
+  const specs = specTargets(input);
 
   const items = [];
   const errors = [];
@@ -357,7 +415,12 @@ async function fetchTirepick(input) {
     const apiUrl = buildTirepickApiUrl(target.spec);
     searchUrl = buildTirepickSearchUrl(input, target.spec);
     try {
-      const response = await fetchJson(apiUrl);
+      const response = await fetchJson(apiUrl, {
+        headers: {
+          "origin": "https://www.tire-pick.com",
+          "referer": "https://www.tire-pick.com/"
+        }
+      });
       if (!response.ok) {
         errors.push(`${target.label} 규격 HTTP ${response.status}`);
         continue;
@@ -398,6 +461,476 @@ async function fetchTirepick(input) {
     status: "failed",
     items: [],
     errorMessage: errors.join(" / ") || "타이어픽 공개 API에서 가격 후보를 찾지 못했습니다."
+  };
+}
+
+function buildAbcApiUrl(spec) {
+  const url = new URL("https://api.abctire.co.kr/api/v2/item/easy");
+  url.searchParams.set("isSize", "true");
+  url.searchParams.set("width", spec.width);
+  url.searchParams.set("rate", spec.aspectRatio);
+  url.searchParams.set("inch", spec.rim);
+  return url.toString();
+}
+
+function parseAbcRows(result, input, spec, quantity) {
+  const rows = ["cost", "review", "purchase"]
+    .flatMap((key) => {
+      const value = result?.[key];
+      if (Array.isArray(value)) return value;
+      return value ? [value] : [];
+    })
+    .filter((row) => row?.itemSeq);
+
+  const seen = new Set();
+  const scored = rows
+    .filter((row) => {
+      if (seen.has(row.itemSeq)) return false;
+      seen.add(row.itemSeq);
+      return true;
+    })
+    .map((row) => {
+      const text = [row.brandName, row.itemName, row.size, row.patternName].filter(Boolean).join(" ");
+      return { row, ...scoreTextCandidate(text, input, spec) };
+    })
+    .filter((item) => item.score > 0)
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return Number(a.row.salePrice || a.row.streetPrice || 0) - Number(b.row.salePrice || b.row.streetPrice || 0);
+    })
+    .slice(0, 3);
+
+  return scored
+    .map(({ row, confidence }, index) => {
+      const unitPrice = numberFromPrice(row.salePrice || row.streetPrice);
+      if (!unitPrice) return null;
+      const availability = Number(row.stock || 0) > 0 && row.state === "SALE" ? "구매 가능" : "품절/확인 필요";
+
+      return normalizeItem({
+        id: `abc-live-${row.itemSeq}-${index}`,
+        platformName: "ABC타이어",
+        productName: [row.brandName, row.itemName].filter(Boolean).join(" ") || "ABC타이어 상품",
+        brand: row.brandName || input.brand,
+        modelName: row.itemName || input.modelName || input.keyword,
+        spec: row.size || specToString(spec),
+        unitPrice,
+        quantity,
+        shippingFee: 0,
+        installationFee: 0,
+        discount: 0,
+        installIncluded: undefined,
+        shopName: "ABC타이어",
+        shopAddress: input.region || "",
+        availableDate: availability,
+        productUrl: "https://abctire.co.kr/easybuy",
+        collectedAt: new Date().toISOString(),
+        confidence,
+        memo: "ABC타이어 공개 API에서 추출한 후보 가격입니다. 재고/장착 옵션은 상세 화면에서 확인하세요."
+      });
+    })
+    .filter(Boolean);
+}
+
+async function fetchAbcTire(input) {
+  const specs = specTargets(input);
+  const items = [];
+  const errors = [];
+  let searchUrl = buildSearchUrl(platformDefinitions.find((item) => item.platformName === "ABC타이어"), input);
+
+  for (const target of specs) {
+    searchUrl = "https://abctire.co.kr/easybuy";
+    try {
+      const response = await fetchJson(buildAbcApiUrl(target.spec), {
+        headers: {
+          "origin": "https://abctire.co.kr",
+          "referer": "https://abctire.co.kr/easybuy"
+        }
+      });
+      if (!response.ok) {
+        errors.push(`${target.label} 규격 HTTP ${response.status}`);
+        continue;
+      }
+      const parsed = parseAbcRows(response.json?.result, input, target.spec, target.quantity);
+      if (!parsed.length) {
+        errors.push(`${target.label} 규격 가격 후보 없음`);
+      }
+      items.push(...parsed);
+    } catch (error) {
+      errors.push(`${target.label} 규격 ${error.name === "AbortError" ? "시간 초과" : error.message}`);
+    }
+  }
+
+  if (items.length) {
+    return {
+      platformName: "ABC타이어",
+      searchUrl,
+      status: errors.length || items.every((item) => item.confidence === "low") ? "partial" : "success",
+      items,
+      errorMessage: errors.length ? errors.join(" / ") : undefined
+    };
+  }
+
+  return {
+    platformName: "ABC타이어",
+    searchUrl,
+    status: "failed",
+    items: [],
+    errorMessage: errors.join(" / ") || "ABC타이어 공개 API에서 가격 후보를 찾지 못했습니다."
+  };
+}
+
+function extractAttr(html, attrName) {
+  const match = html.match(new RegExp(`${attrName}="([^"]*)"`, "i"));
+  return match ? decodeHtml(match[1]) : "";
+}
+
+function parseTstationCards(html, input, spec, quantity) {
+  const cardRegex = /<a\b(?=[^>]*class="[^"]*goDetailPage tire-list-item[^"]*")[\s\S]*?(?=<a\b(?=[^>]*class="[^"]*goDetailPage tire-list-item)|<\/div>\s*<\/div>\s*<script|$)/gi;
+  const cards = Array.from(html.matchAll(cardRegex), (match) => match[0]);
+  const scored = cards
+    .map((card, index) => {
+      const data = extractAttr(card, "data-ap-product");
+      const pagePath = extractAttr(card, "data-pagepath");
+      const itemName = data.match(/'item_name'\s*:\s*'([^']+)'/)?.[1] || stripTags(card.match(/<strong[^>]*>([\s\S]*?)<\/strong>/i)?.[1] || "");
+      const brand = data.match(/'item_brand'\s*:\s*'([^']+)'/)?.[1] || input.brand;
+      const variant = data.match(/'item_variant'\s*:\s*'([^']+)'/)?.[1] || specToString(spec);
+      const priceMatches = Array.from(card.matchAll(/([0-9]{1,3}(?:,[0-9]{3})+)원/g), (priceMatch) => numberFromPrice(priceMatch[1])).filter(Boolean);
+      const unitPrice = priceMatches[0] || numberFromPrice(data.match(/'price'\s*:\s*(\d+)/)?.[1]);
+      const text = [brand, itemName, variant, stripTags(card)].filter(Boolean).join(" ");
+      return {
+        card,
+        index,
+        pagePath,
+        itemName,
+        brand,
+        variant,
+        unitPrice,
+        ...scoreTextCandidate(text, input, spec)
+      };
+    })
+    .filter((item) => item.unitPrice && item.score > 0)
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return a.unitPrice - b.unitPrice;
+    })
+    .slice(0, 3);
+
+  return scored.map((item) =>
+    normalizeItem({
+      id: `tstation-live-${specCompact(spec)}-${item.index}`,
+      platformName: "티스테이션",
+      productName: item.itemName || "티스테이션 상품",
+      brand: item.brand || input.brand,
+      modelName: item.itemName || input.modelName || input.keyword,
+      spec: item.variant || specToString(spec),
+      unitPrice: item.unitPrice,
+      quantity,
+      shippingFee: 0,
+      installationFee: 0,
+      discount: 0,
+      installIncluded: undefined,
+      shopName: "티스테이션",
+      shopAddress: input.region || "",
+      availableDate: "확인 필요",
+      productUrl: item.pagePath ? `https://www.tstation.com/${item.pagePath.replace(/^\/+/, "")}` : "https://www.tstation.com/tire/sizes",
+      collectedAt: new Date().toISOString(),
+      confidence: item.confidence,
+      memo: "티스테이션 상품 목록 HTML에서 노출 가격을 추출했습니다. 장착 조건과 프로모션은 상세 페이지에서 확인하세요."
+    })
+  );
+}
+
+async function fetchTstation(input) {
+  const specs = specTargets(input);
+  const items = [];
+  const errors = [];
+  let searchUrl = "https://www.tstation.com/tire/sizes";
+
+  for (const target of specs) {
+    const form = new URLSearchParams({
+      srotText: "listSort06",
+      rowsPerPage: "20",
+      searchFrRe: "fr",
+      tireSizeFr: specCompact(target.spec),
+      productYn: "Y",
+      goodsLrclCd: "01"
+    });
+    searchUrl = `https://www.tstation.com/tire/sizes?front=${specCompact(target.spec)}`;
+
+    try {
+      const response = await fetchFormText("https://www.tstation.com/tire/filter/product", form, {
+        "origin": "https://www.tstation.com",
+        "referer": "https://www.tstation.com/tire/sizes",
+        "x-requested-with": "XMLHttpRequest"
+      });
+      if (!response.ok) {
+        errors.push(`${target.label} 규격 HTTP ${response.status}`);
+        continue;
+      }
+      const parsed = parseTstationCards(response.text, input, target.spec, target.quantity);
+      if (!parsed.length) {
+        errors.push(`${target.label} 규격 가격 후보 없음`);
+      }
+      items.push(...parsed);
+    } catch (error) {
+      errors.push(`${target.label} 규격 ${error.name === "AbortError" ? "시간 초과" : error.message}`);
+    }
+  }
+
+  if (items.length) {
+    return {
+      platformName: "티스테이션",
+      searchUrl,
+      status: errors.length || items.every((item) => item.confidence === "low") ? "partial" : "success",
+      items,
+      errorMessage: errors.length ? errors.join(" / ") : undefined
+    };
+  }
+
+  return {
+    platformName: "티스테이션",
+    searchUrl,
+    status: "failed",
+    items: [],
+    errorMessage: errors.join(" / ") || "티스테이션 목록에서 가격 후보를 찾지 못했습니다."
+  };
+}
+
+function buildTireproApiUrl(spec) {
+  const url = new URL("https://tirepro-middleware.kumhotire.com/api/v1/tire");
+  url.searchParams.set("page", "1");
+  url.searchParams.set("limit", "20");
+  url.searchParams.set("orderBy", "best");
+  url.searchParams.set("categoryNo", "42");
+  url.searchParams.set("sectionWidth", spec.width);
+  url.searchParams.set("aspectRatio", spec.aspectRatio);
+  url.searchParams.set("inch", spec.rim);
+  return url.toString();
+}
+
+function parseTireproRows(rows, input, spec, quantity) {
+  return rows
+    .map((row) => {
+      const text = [row.productName, row.productEngName, row.standard, row.patternCode, row.simpleDescription].filter(Boolean).join(" ");
+      return { row, ...scoreTextCandidate(text, input, spec) };
+    })
+    .filter((item) => item.score > 0)
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return Number(a.row.promotionPrice || a.row.price || 0) - Number(b.row.promotionPrice || b.row.price || 0);
+    })
+    .slice(0, 3)
+    .map(({ row, confidence }, index) => {
+      const unitPrice = numberFromPrice(row.promotionPrice || row.price || row.retailPrice);
+      if (!unitPrice) return null;
+      const description = String(row.simpleDescription || "");
+
+      return normalizeItem({
+        id: `tirepro-live-${row.productNo}-${index}`,
+        platformName: "타이어프로",
+        productName: row.productName || "타이어프로 상품",
+        brand: "금호",
+        modelName: row.patternCode || row.productName || input.modelName || input.keyword,
+        spec: row.standard || specToString(spec),
+        unitPrice,
+        quantity,
+        shippingFee: /무료배송/.test(description) ? 0 : 0,
+        installationFee: /무료장착/.test(description) ? 0 : 0,
+        discount: 0,
+        installIncluded: /무료장착/.test(description) || undefined,
+        shopName: "타이어프로",
+        shopAddress: input.region || "",
+        availableDate: row.soldOut ? "품절" : "구매 가능",
+        productUrl: row.productNo ? `https://www.tirepro.co.kr/product/detail.html?product_no=${row.productNo}` : "https://www.tirepro.co.kr/product/list.html?cate_no=42",
+        collectedAt: new Date().toISOString(),
+        confidence,
+        memo: `타이어프로 공개 API에서 추출한 후보 가격입니다.${description ? ` ${description}` : ""}`
+      });
+    })
+    .filter(Boolean);
+}
+
+async function fetchTirepro(input) {
+  const specs = specTargets(input);
+  const items = [];
+  const errors = [];
+  let searchUrl = "https://www.tirepro.co.kr/product/list.html?cate_no=42";
+
+  for (const target of specs) {
+    searchUrl = `https://www.tirepro.co.kr/product/list.html?cate_no=42&width=${target.spec.width}&aspect=${target.spec.aspectRatio}&inch=${target.spec.rim}`;
+    try {
+      const response = await fetchJson(buildTireproApiUrl(target.spec), {
+        headers: {
+          "origin": "https://www.tirepro.co.kr",
+          "referer": searchUrl
+        }
+      });
+      if (!response.ok) {
+        errors.push(`${target.label} 규격 HTTP ${response.status}`);
+        continue;
+      }
+      const rows = Array.isArray(response.json?.data?.items) ? response.json.data.items : [];
+      if (!rows.length) {
+        errors.push(`${target.label} 규격 가격 후보 없음`);
+        continue;
+      }
+      const parsed = parseTireproRows(rows, input, target.spec, target.quantity);
+      if (!parsed.length) {
+        errors.push(`${target.label} 규격 매칭 후보 없음`);
+      }
+      items.push(...parsed);
+    } catch (error) {
+      errors.push(`${target.label} 규격 ${error.name === "AbortError" ? "시간 초과" : error.message}`);
+    }
+  }
+
+  if (items.length) {
+    return {
+      platformName: "타이어프로",
+      searchUrl,
+      status: errors.length || items.every((item) => item.confidence === "low") ? "partial" : "success",
+      items,
+      errorMessage: errors.length ? errors.join(" / ") : undefined
+    };
+  }
+
+  return {
+    platformName: "타이어프로",
+    searchUrl,
+    status: "failed",
+    items: [],
+    errorMessage: errors.join(" / ") || "타이어프로 공개 API에서 가격 후보를 찾지 못했습니다."
+  };
+}
+
+function buildNexenBody(spec) {
+  return {
+    modelCd: "",
+    contentsCd: "",
+    classCd: "",
+    sectionWidth: String(spec.width),
+    aspectRatio: String(spec.aspectRatio),
+    wheelInches: String(spec.rim),
+    sectionRwWidth: "",
+    aspectRwRatio: "",
+    wheelRwInches: "",
+    tireSizeYn: "",
+    fCarType: ["P1", "S1", "V1"],
+    fBrand: ["NXN"],
+    fSeason: ["03", "01", "02"],
+    fRentalYn: ["B", "R"],
+    pageNo: "1",
+    pageSize: "6",
+    orderType: "pop",
+    searchType: "X",
+    lifeStyle: null,
+    orderSpec: "",
+    buyMinFee: 0,
+    buyMaxFee: 400000,
+    rentMinFee: 0,
+    rentMaxFee: 400000
+  };
+}
+
+function parseNexenRows(rows, input, spec, quantity) {
+  return rows
+    .map((row) => {
+      const text = [row.matNm, row.petternCdNm, row.listTireSize, row.seasonCdNm, row.classCdNm].filter(Boolean).join(" ");
+      return { row, ...scoreTextCandidate(text, input, spec) };
+    })
+    .filter((item) => item.score > 0)
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return Number(a.row.saleFee || a.row.minSaleFee || 0) - Number(b.row.saleFee || b.row.minSaleFee || 0);
+    })
+    .slice(0, 3)
+    .map(({ row, confidence }, index) => {
+      const unitPrice = numberFromPrice(row.saleFee || row.minSaleFee || row.otFee || row.bassSaleFee);
+      if (!unitPrice) return null;
+      const monthly = row.otPay ? ` 월 렌탈료 ${Number(row.otPay).toLocaleString("ko-KR")}원 정보가 함께 제공됩니다.` : "";
+
+      return normalizeItem({
+        id: `nexen-live-${row.dpPrNo || row.matCd || index}`,
+        platformName: "넥센 넥스트레벨",
+        productName: row.matNm || row.petternCdNm || "넥센 넥스트레벨 상품",
+        brand: "넥센",
+        modelName: row.petternCdNm || row.matNm || input.modelName || input.keyword,
+        spec: row.listTireSize || specToString(spec),
+        unitPrice,
+        quantity,
+        shippingFee: 0,
+        installationFee: 0,
+        discount: 0,
+        installIncluded: undefined,
+        shopName: "넥센 넥스트레벨",
+        shopAddress: input.region || "",
+        availableDate: "확인 필요",
+        productUrl: "https://www.nexen-nextlevel.com/product/prdList?viewGbn=H",
+        collectedAt: new Date().toISOString(),
+        confidence,
+        memo: `넥센 넥스트레벨 공개 API에서 추출한 넥센 브랜드 후보입니다.${monthly}`
+      });
+    })
+    .filter(Boolean);
+}
+
+async function fetchNexenNextlevel(input) {
+  const specs = specTargets(input);
+  const items = [];
+  const errors = [];
+  let searchUrl = "https://www.nexen-nextlevel.com/product/prdList?viewGbn=H";
+
+  for (const target of specs) {
+    try {
+      const response = await fetchJson("https://www.nexen-nextlevel.com/product/selectPrdList", {
+        method: "POST",
+        body: JSON.stringify(buildNexenBody(target.spec)),
+        headers: {
+          "content-type": "application/json; charset=UTF-8",
+          "origin": "https://www.nexen-nextlevel.com",
+          "referer": searchUrl,
+          "x-requested-with": "XMLHttpRequest"
+        }
+      });
+      if (!response.ok) {
+        errors.push(`${target.label} 규격 HTTP ${response.status}`);
+        continue;
+      }
+      const rows = Array.isArray(response.json?.selectPrdList) ? response.json.selectPrdList : [];
+      if (!rows.length) {
+        errors.push(`${target.label} 규격 가격 후보 없음`);
+        continue;
+      }
+      const parsed = parseNexenRows(rows, input, target.spec, target.quantity);
+      if (!parsed.length) {
+        errors.push(`${target.label} 규격 매칭 후보 없음`);
+      }
+      items.push(...parsed);
+    } catch (error) {
+      errors.push(`${target.label} 규격 ${error.name === "AbortError" ? "시간 초과" : error.message}`);
+    }
+  }
+
+  if (items.length) {
+    return {
+      platformName: "넥센 넥스트레벨",
+      searchUrl,
+      status: errors.length || items.every((item) => item.confidence === "low") ? "partial" : "success",
+      items,
+      errorMessage: errors.length
+        ? errors.join(" / ")
+        : items.every((item) => item.confidence === "low")
+          ? "브랜드 전용몰이라 입력 브랜드와 다른 넥센 후보일 수 있습니다."
+          : undefined
+    };
+  }
+
+  return {
+    platformName: "넥센 넥스트레벨",
+    searchUrl,
+    status: "failed",
+    items: [],
+    errorMessage: errors.join(" / ") || "넥센 넥스트레벨 공개 API에서 가격 후보를 찾지 못했습니다."
   };
 }
 
@@ -449,9 +982,17 @@ export async function fetchLivePrices(input) {
   const results = [];
   results.push(await fetchDanawa(input));
   results.push(await fetchTirepick(input));
+  results.push(await fetchAbcTire(input));
+  results.push(await fetchTstation(input));
+  results.push(await fetchTirepro(input));
+  results.push(await fetchNexenNextlevel(input));
   results.push(await probeBlockedPlatform("네이버 쇼핑", input));
+  results.push(await probeBlockedPlatform("11번가", input));
+  results.push(await probeBlockedPlatform("G마켓", input));
+  results.push(await probeBlockedPlatform("옥션", input));
+  results.push(await probeBlockedPlatform("쿠팡", input));
 
-  const handled = new Set(["다나와", "타이어픽", "네이버 쇼핑"]);
+  const handled = new Set(["다나와", "타이어픽", "ABC타이어", "티스테이션", "타이어프로", "넥센 넥스트레벨", "네이버 쇼핑", "11번가", "G마켓", "옥션", "쿠팡"]);
   for (const platform of platformDefinitions) {
     if (handled.has(platform.platformName)) continue;
     results.push(unsupportedResult(platform, input));

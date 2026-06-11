@@ -23,23 +23,23 @@ const platforms = [
   },
   {
     platformName: "ABC타이어",
-    baseUrl: "https://www.abctire.co.kr/search",
+    baseUrl: "https://abctire.co.kr/tire-search",
     query: "keyword"
   },
   {
     platformName: "티스테이션",
-    baseUrl: "https://www.tstation.com/search",
-    query: "keyword"
+    baseUrl: "https://www.tstation.com/tire/sizes",
+    query: "search"
   },
   {
     platformName: "타이어프로",
-    baseUrl: "https://www.tirepro.co.kr/search",
+    baseUrl: "https://www.tirepro.co.kr/product/list.html",
     query: "keyword"
   },
   {
     platformName: "넥센 넥스트레벨",
-    baseUrl: "https://www.nexentire.com/kr/search",
-    query: "q"
+    baseUrl: "https://www.nexen-nextlevel.com/product/prdList",
+    query: "search"
   },
   {
     platformName: "네이버 쇼핑",
