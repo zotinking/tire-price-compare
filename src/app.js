@@ -27,6 +27,7 @@ const state = {
   excludedPlatforms: new Set(),
   selectedItemId: null,
   manualPlatform: "ABC타이어",
+  isManualModalOpen: false,
   notice: "기본 예시가 입력되어 있습니다. 로컬 자동화를 실행하면 이 PC의 Chrome/Edge 브라우저에서 가격 후보를 추출합니다."
 };
 
@@ -264,11 +265,8 @@ function render() {
         ${renderStatusCards()}
         ${renderComparePanel()}
       </section>
-      <aside class="side-panel">
-        ${renderManualPanel()}
-        ${renderHistoryPanel()}
-      </aside>
     </main>
+    ${renderManualModal()}
   `;
   bindEvents();
 }
@@ -366,7 +364,10 @@ function renderStatusCard(result) {
         <button class="icon-button" data-action="toggle-platform" data-platform="${escapeHtml(result.platformName)}" title="플랫폼별 접기/펼치기">${icon("chevron")}</button>
         <button class="mini-button" data-action="exclude-platform" data-platform="${escapeHtml(result.platformName)}">${excluded ? "복원" : "제외"}</button>
       </div>
-      <a href="${result.searchUrl}" target="_blank" rel="noreferrer">검색 링크 열기</a>
+      <div class="status-actions">
+        <a href="${result.searchUrl}" target="_blank" rel="noreferrer">검색 링크 열기</a>
+        <button class="mini-button" data-action="open-manual" data-platform="${escapeHtml(result.platformName)}">보정</button>
+      </div>
       ${result.errorMessage ? `<p>${escapeHtml(result.errorMessage)}</p>` : ""}
       ${collapsed ? `<div class="collapsed-label">표에서 접힘</div>` : ""}
     </article>
@@ -494,7 +495,8 @@ function renderPriceLinks(item) {
   return `<a class="link-button" href="${item.productUrl || item.searchUrl}" target="_blank" rel="noreferrer" title="가격 확인 링크">${icon("link")}현재가</a>`;
 }
 
-function renderManualPanel() {
+function renderManualModal() {
+  if (!state.isManualModalOpen) return "";
   const selected = findItemById(state.selectedItemId);
   const values = selected || {
     platformName: state.manualPlatform,
@@ -512,15 +514,17 @@ function renderManualPanel() {
   };
 
   return `
-    <section class="panel manual-panel" aria-label="수동 보정">
-      <div class="panel-heading">
+    <div class="modal-backdrop" role="presentation">
+      <section class="modal manual-panel" role="dialog" aria-modal="true" aria-label="수동 보정">
+        <div class="panel-heading">
         <div>
           <h2>수동 보정</h2>
-          <p>검색 링크의 현재 가격을 확인한 뒤 직접 입력합니다.</p>
+          <p>${escapeHtml(values.platformName)}의 현재 가격을 확인한 뒤 직접 입력합니다.</p>
         </div>
-      </div>
+        <button class="icon-button" data-action="close-manual" title="닫기">×</button>
+        </div>
 
-      <form class="manual-form" data-manual-form>
+        <form class="manual-form" data-manual-form>
         <label class="field">
           <span>플랫폼</span>
           <select name="platformName">
@@ -549,37 +553,13 @@ function renderManualPanel() {
           <textarea name="memo">${escapeHtml(values.memo || "")}</textarea>
         </label>
         <div class="manual-actions">
-          <button class="secondary-button" type="button" data-action="cancel-edit">새 입력</button>
+          ${selected ? `<button class="secondary-button" type="button" data-action="cancel-edit">새 입력</button>` : ""}
+          <button class="ghost-button" type="button" data-action="close-manual">닫기</button>
           <button class="primary-button" type="submit">${selected ? "수정 저장" : "수동 결과 추가"}</button>
         </div>
-      </form>
-    </section>
-  `;
-}
-
-function renderHistoryPanel() {
-  const failed = state.results.filter((result) => ["failed", "manual_required", "blocked", "unsupported"].includes(result.status));
-  return `
-    <section class="panel history-panel" aria-label="수동 확인 대상">
-      <h2>수동 확인 대상</h2>
-      ${
-        failed.length
-          ? failed
-              .map(
-                (result) => `
-                  <div class="manual-target">
-                    <div>
-                      <strong>${result.platformName}</strong>
-                      <span>${labelForStatus(result.status)}</span>
-                    </div>
-                    <a href="${result.searchUrl}" target="_blank" rel="noreferrer">${icon("link")}열기</a>
-                  </div>
-                `
-              )
-              .join("")
-          : `<p class="muted">로컬 자동화 후 확인 대상이 여기에 표시됩니다.</p>`
-      }
-    </section>
+        </form>
+      </section>
+    </div>
   `;
 }
 
@@ -679,6 +659,7 @@ function handleAction(event) {
     state.collapsedPlatforms.clear();
     state.excludedPlatforms.clear();
     state.selectedItemId = null;
+    state.isManualModalOpen = false;
     state.notice = "저장 데이터를 초기화했습니다. 기본 예시로 돌아왔습니다.";
     render();
     return;
@@ -714,7 +695,25 @@ function handleAction(event) {
 
   if (action === "edit-item") {
     state.selectedItemId = button.dataset.id;
+    const selected = findItemById(state.selectedItemId);
+    if (selected?.platformName) state.manualPlatform = selected.platformName;
+    state.isManualModalOpen = true;
     state.notice = "선택한 항목을 수동 보정 패널에서 수정할 수 있습니다.";
+    render();
+    return;
+  }
+
+  if (action === "open-manual") {
+    state.selectedItemId = null;
+    state.manualPlatform = platform || state.manualPlatform;
+    state.isManualModalOpen = true;
+    render();
+    return;
+  }
+
+  if (action === "close-manual") {
+    state.selectedItemId = null;
+    state.isManualModalOpen = false;
     render();
     return;
   }
@@ -794,6 +793,7 @@ function handleManualSubmit(event) {
   }
 
   state.selectedItemId = null;
+  state.isManualModalOpen = false;
   state.notice = `${platformName} 수동 보정값을 비교표에 반영했습니다.`;
   persist();
   render();

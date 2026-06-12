@@ -63,8 +63,7 @@ a {
 
 .topbar h1,
 .panel h2,
-.status-section h2,
-.history-panel h2 {
+.status-section h2 {
   margin: 0;
   line-height: 1.2;
 }
@@ -96,9 +95,6 @@ a {
 }
 
 .app-shell {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 360px;
-  gap: 20px;
   padding: 20px 32px 40px;
 }
 
@@ -106,12 +102,6 @@ a {
   display: grid;
   gap: 18px;
   min-width: 0;
-}
-
-.side-panel {
-  display: grid;
-  align-content: start;
-  gap: 18px;
 }
 
 .panel,
@@ -141,8 +131,7 @@ a {
 }
 
 .panel h2,
-.status-section h2,
-.history-panel h2 {
+.status-section h2 {
   font-size: 18px;
   font-weight: 760;
 }
@@ -424,6 +413,13 @@ svg {
   justify-content: space-between;
 }
 
+.status-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 .status-meta span {
   color: var(--muted);
   font-size: 12px;
@@ -595,9 +591,25 @@ td small {
   vertical-align: middle;
 }
 
-.manual-panel {
-  position: sticky;
-  top: 96px;
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(23, 35, 59, 0.36);
+}
+
+.modal {
+  width: min(760px, 100%);
+  max-height: min(860px, calc(100vh - 48px));
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: 0 26px 70px rgba(23, 35, 59, 0.22);
+  padding: 18px;
 }
 
 .manual-actions {
@@ -605,48 +617,7 @@ td small {
   justify-content: flex-end;
 }
 
-.manual-target {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px 0;
-  border-top: 1px solid var(--line);
-}
-
-.manual-target:first-of-type {
-  border-top: 0;
-}
-
-.manual-target strong,
-.manual-target span {
-  display: block;
-}
-
-.manual-target span {
-  margin-top: 3px;
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.manual-target a {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 13px;
-  font-weight: 800;
-}
-
 @media (max-width: 1240px) {
-  .app-shell {
-    grid-template-columns: 1fr;
-  }
-
-  .side-panel,
-  .manual-panel {
-    position: static;
-  }
-
   .status-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
@@ -715,7 +686,13 @@ td small {
   }
 
   .panel,
-  .notice {
+  .notice,
+  .modal {
     padding: 14px;
+  }
+
+  .modal-backdrop {
+    align-items: end;
+    padding: 10px;
   }
 }

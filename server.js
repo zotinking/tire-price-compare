@@ -139,6 +139,12 @@ createServer(async (req, res) => {
   const requestUrl = req.url || "/";
   const parsedUrl = new URL(requestUrl, `http://${req.headers.host || "localhost"}`);
 
+  if (requestUrl.startsWith("/favicon.ico")) {
+    res.writeHead(204, { "Cache-Control": "public, max-age=86400" });
+    res.end();
+    return;
+  }
+
   if (requestUrl.startsWith("/api/fetch-prices")) {
     if (req.method === "OPTIONS") {
       sendJson(res, 204, {});
