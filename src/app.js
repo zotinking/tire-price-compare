@@ -220,7 +220,9 @@ function filteredItems() {
     if (state.sortKey === "installIncluded") return Number(b.installIncluded === true) - Number(a.installIncluded === true);
     if (state.sortKey === "status") return a.fetchStatus.localeCompare(b.fetchStatus);
     if (state.sortKey === "availableDate") return String(a.availableDate || "").localeCompare(String(b.availableDate || ""), "ko-KR");
-    return Number(a.totalPrice || 0) - Number(b.totalPrice || 0);
+    const aTotal = Number(a.totalPrice || 0) > 0 ? Number(a.totalPrice) : Number.POSITIVE_INFINITY;
+    const bTotal = Number(b.totalPrice || 0) > 0 ? Number(b.totalPrice) : Number.POSITIVE_INFINITY;
+    return aTotal - bTotal;
   });
 
   return sorted;
@@ -387,7 +389,7 @@ function renderComparePanel() {
             <span>정렬</span>
             <select data-control="sortKey">
               ${option("totalPrice", "최종 총액", state.sortKey)}
-              ${option("unitPrice", "타이어 단가", state.sortKey)}
+              ${option("unitPrice", "평균 단가", state.sortKey)}
               ${option("installIncluded", "장착비 포함", state.sortKey)}
               ${option("shippingFee", "배송비", state.sortKey)}
               ${option("availableDate", "장착 가능일", state.sortKey)}
@@ -418,16 +420,13 @@ function renderComparePanel() {
             <tr>
               <th>순위</th>
               <th>플랫폼</th>
-              <th>상품명</th>
-              <th>규격</th>
-              <th>단가</th>
-              <th>수량</th>
-              <th>배송비</th>
-              <th>장착비</th>
-              <th>할인</th>
-              <th>최종 총액</th>
+              <th>앞 후보</th>
+              <th>앞 단가</th>
+              <th>뒤 후보</th>
+              <th>뒤 단가</th>
+              <th>배송/장착</th>
+              <th>4본 합계</th>
               <th>장착비 포함</th>
-              <th>장착점</th>
               <th>수집 상태</th>
               <th>신뢰도</th>
               <th>가격 확인</th>
@@ -438,7 +437,7 @@ function renderComparePanel() {
             ${
               items.length
                 ? items.map((item, index) => renderTableRow(item, index, lowest)).join("")
-                : `<tr><td colspan="16" class="empty-cell">자동 검색을 실행하거나 수동 보정에서 가격을 추가하세요.</td></tr>`
+                : `<tr><td colspan="13" class="empty-cell">자동 검색을 실행하거나 수동 보정에서 가격을 추가하세요.</td></tr>`
             }
           </tbody>
         </table>
@@ -450,29 +449,49 @@ function renderComparePanel() {
 function renderTableRow(item, index, lowest) {
   const isLowest = lowest && item.id === lowest.id;
   const installLabel = item.installIncluded === true ? "포함" : item.installIncluded === false ? "별도" : "확인 필요";
+  const isSet = item.frontUnitPrice || item.rearUnitPrice || item.incompleteSet;
+  const frontLabel = isSet
+    ? `${escapeHtml(item.frontSpec || "-")} x ${item.frontQuantity || "-"}<br><span>${escapeHtml(item.frontProductName || "-")}</span>`
+    : `${escapeHtml(item.spec || "-")}<br><span>${escapeHtml(item.productName || "-")}</span>`;
+  const rearLabel = isSet
+    ? `${escapeHtml(item.rearSpec || "-")} x ${item.rearQuantity || "-"}<br><span>${escapeHtml(item.rearProductName || "-")}</span>`
+    : "-";
+  const frontPrice = isSet ? `${money(item.frontUnitPrice)}<br><small>${money(item.frontTotal)}</small>` : money(item.unitPrice);
+  const rearPrice = isSet ? `${money(item.rearUnitPrice)}<br><small>${money(item.rearTotal)}</small>` : "-";
+  const extraFees = `${money(item.shippingFee)} / ${money(item.installationFee)}`;
+  const totalLabel = item.incompleteSet ? "확인 필요" : money(item.totalPrice);
   return `
     <tr class="${isLowest ? "lowest-row" : ""}">
       <td>${isLowest ? "최저가" : index + 1}</td>
       <td><strong>${escapeHtml(item.platformName)}</strong>${item.manual ? `<span class="manual-dot">수동</span>` : ""}</td>
-      <td>${escapeHtml(item.productName || "-")}</td>
-      <td>${escapeHtml(item.spec || "-")}</td>
-      <td>${money(item.unitPrice)}</td>
-      <td>${item.quantity || "-"}</td>
-      <td>${money(item.shippingFee)}</td>
-      <td>${money(item.installationFee)}</td>
-      <td>${money(item.discount)}</td>
-      <td class="price-cell">${money(item.totalPrice)}</td>
+      <td class="candidate-cell">${frontLabel}</td>
+      <td>${frontPrice}</td>
+      <td class="candidate-cell">${rearLabel}</td>
+      <td>${rearPrice}</td>
+      <td>${extraFees}</td>
+      <td class="price-cell">${totalLabel}</td>
       <td><span class="tag install-${item.installIncluded === true ? "yes" : item.installIncluded === false ? "no" : "unknown"}">${installLabel}</span></td>
-      <td>${escapeHtml(item.shopName || "-")}</td>
       <td><span class="status-pill ${item.fetchStatus}">${labelForStatus(item.fetchStatus)}</span></td>
       <td><span class="confidence ${item.confidence}">${item.confidence}</span></td>
-      <td><a class="link-button" href="${item.productUrl || item.searchUrl}" target="_blank" rel="noreferrer" title="가격 확인 링크">${icon("link")}현재가 확인</a></td>
+      <td>${renderPriceLinks(item)}</td>
       <td class="memo-cell">
         <span>${escapeHtml(item.memo || "")}</span>
         <button class="icon-button" data-action="edit-item" data-id="${escapeHtml(item.id)}" title="수동 수정">${icon("edit")}</button>
       </td>
     </tr>
   `;
+}
+
+function renderPriceLinks(item) {
+  if (item.frontProductUrl || item.rearProductUrl) {
+    return `
+      <div class="price-links">
+        ${item.frontProductUrl ? `<a class="link-button" href="${item.frontProductUrl}" target="_blank" rel="noreferrer" title="앞 타이어 가격 확인">${icon("link")}앞</a>` : ""}
+        ${item.rearProductUrl ? `<a class="link-button" href="${item.rearProductUrl}" target="_blank" rel="noreferrer" title="뒤 타이어 가격 확인">${icon("link")}뒤</a>` : ""}
+      </div>
+    `;
+  }
+  return `<a class="link-button" href="${item.productUrl || item.searchUrl}" target="_blank" rel="noreferrer" title="가격 확인 링크">${icon("link")}현재가</a>`;
 }
 
 function renderManualPanel() {

@@ -503,6 +503,26 @@ tbody tr:hover {
   font-weight: 850;
 }
 
+.candidate-cell {
+  min-width: 220px;
+  max-width: 320px;
+}
+
+.candidate-cell span,
+td small {
+  display: inline-block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.price-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
 .empty-cell {
   height: 120px;
   color: var(--muted);
