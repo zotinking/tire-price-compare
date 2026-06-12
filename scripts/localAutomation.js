@@ -82,6 +82,10 @@ function specCompact(spec) {
   return `${spec.width}${spec.aspectRatio}${spec.rim}`;
 }
 
+function abcTireSizeUrl(spec) {
+  return `https://abctire.co.kr/tire?tireSize=${encodeURIComponent(specToString(spec))}`;
+}
+
 function sameSpec(a, b) {
   return specToString(a) === specToString(b);
 }
@@ -213,7 +217,7 @@ async function clickFirstVisible(page, locator, options = {}) {
 }
 
 async function selectAbcSizeOption(page, selectIndex, value) {
-  const boxes = page.locator('div[class*="sizeSelectWrap"] div[class*="selectBox"]');
+  const boxes = page.locator('div[class*="sizeSelectWrap"] div[class*="selectBox__"]');
   await boxes.nth(selectIndex).click({ force: true, timeout: 5000 });
   await page.waitForTimeout(400);
 
@@ -251,12 +255,17 @@ async function openAbcSearchPage(page, platform, _input, target) {
   await selectAbcSizeOption(page, 1, String(target.spec.aspectRatio));
   await selectAbcSizeOption(page, 2, String(target.spec.rim));
 
-  const productButton = page.getByRole("button", { name: /제품 보러가기/ }).first();
-  await productButton.click({ force: true, timeout: 5000 });
-  await page.waitForLoadState("domcontentloaded", { timeout: 45000 }).catch(() => {});
+  const resultUrl = abcTireSizeUrl(target.spec);
+  try {
+    const productButton = page.getByRole("button", { name: /제품 보러가기/ }).first();
+    await productButton.click({ force: true, timeout: 5000 });
+    await page.waitForLoadState("domcontentloaded", { timeout: 15000 });
+  } catch {
+    await page.goto(resultUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
+  }
   await page.waitForTimeout(3500);
   await dismissPopups(page);
-  return page.url();
+  return page.url() || resultUrl;
 }
 
 async function openTstationSearchPage(page, platform, _input, target) {
@@ -265,6 +274,23 @@ async function openTstationSearchPage(page, platform, _input, target) {
   await dismissPopups(page);
 
   const compact = specCompact(target.spec);
+  const searchTerms = [
+    specToString(target.spec),
+    `${target.spec.width}/${target.spec.aspectRatio}R${target.spec.rim}`,
+    compact
+  ];
+
+  const openedGlobalSearch = await openTstationGlobalSearch(page);
+
+  for (const term of searchTerms) {
+    const searched = await fillAndSubmitTstationGlobalSearch(page, term);
+    if (searched) break;
+  }
+
+  if (await isTstationSearchPopupOpen(page)) {
+    await submitTstationPopupSizeSearch(page, compact);
+  }
+
   await page.evaluate((value) => {
     for (const selector of ["#tireSizeFr", "#tireSizeRe"]) {
       const input = document.querySelector(selector);
@@ -276,15 +302,122 @@ async function openTstationSearchPage(page, platform, _input, target) {
     }
   }, compact);
 
+  if (!openedGlobalSearch) {
+    await openTstationSizeTabSearch(page, compact);
+  }
+
+  await page.waitForLoadState("domcontentloaded", { timeout: 15000 }).catch(() => {});
+  await page.waitForTimeout(3000);
+  await dismissPopups(page);
+  return page.url();
+}
+
+async function fillAndSubmitTstationGlobalSearch(page, term) {
+  const inputs = page.locator('input#searchInput, input[type="search"], input[placeholder*="차량번호"], input[placeholder*="사이즈"]');
+  const count = await inputs.count();
+
+  for (let index = 0; index < count; index += 1) {
+    const input = inputs.nth(index);
+    try {
+      if (!(await input.isVisible({ timeout: 500 }))) continue;
+      await input.fill(term, { timeout: 3000 });
+      await page.keyboard.press("Enter");
+      await page.waitForTimeout(1800);
+
+      const stillVisible = await input.isVisible({ timeout: 500 }).catch(() => false);
+      if (stillVisible) {
+        await clickFirstVisible(page, page.locator('button:has(.search), a:has(.search), button:has-text("검색")'), { force: true });
+        await page.waitForTimeout(1800);
+      }
+      return true;
+    } catch {
+      // Try the next visible search input.
+    }
+  }
+
+  return false;
+}
+
+async function isTstationSearchPopupOpen(page) {
+  return page.evaluate(() => {
+    const popup = document.querySelector("#searchPopup");
+    const input = document.querySelector("#searchPopup #searchInput");
+    const rect = input?.getBoundingClientRect();
+    return Boolean(
+      popup?.classList.contains("on") &&
+        rect &&
+        rect.width > 0 &&
+        rect.height > 0 &&
+        rect.top < window.innerHeight &&
+        rect.left < window.innerWidth
+    );
+  });
+}
+
+async function openTstationGlobalSearch(page) {
+  const triggers = [
+    page.locator(".search-products"),
+    page.locator("a:has(.search-products)"),
+    page.locator('button:has(.search-products)'),
+    page.locator("#utilSearchCar")
+  ];
+
+  for (const trigger of triggers) {
+    await clickFirstVisible(page, trigger, { force: true });
+    await page.waitForTimeout(800);
+    if (await isTstationSearchPopupOpen(page)) return true;
+  }
+
+  return false;
+}
+
+async function submitTstationPopupSizeSearch(page, compact) {
+  await clickFirstVisible(page, page.getByText("타이어 사이즈로 찾기", { exact: true }), { force: true });
+  await page.waitForTimeout(700);
+
+  const searched = await fillAndSubmitTstationGlobalSearch(page, compact);
+  if (searched) return;
+
+  await page.evaluate((value) => {
+    const inputs = [
+      document.querySelector("#searchPopup #searchInput"),
+      document.querySelector("#searchPopup #tireSizeFrSearchInput"),
+      document.querySelector("#searchPopup #tireSizeReSearchInput"),
+      document.querySelector("#tireSizeFrSearchInput"),
+      document.querySelector("#tireSizeReSearchInput")
+    ].filter(Boolean);
+
+    for (const input of inputs) {
+      input.value = value;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+
+    const tireShopButton = Array.from(document.querySelectorAll("button"))
+      .find((button) => /타이어\s*쇼핑하기|결과\s*보기|조회하기|검색/.test(button.innerText || ""));
+    tireShopButton?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+  }, compact);
+}
+
+async function openTstationSizeTabSearch(page, compact) {
   await clickFirstVisible(page, page.locator("button.searchCarCall-newVersion"), { force: true });
   await page.waitForTimeout(1200);
 
+  const sizeTabClicked =
+    (await clickFirstVisible(page, page.getByText("사이즈로 찾기", { exact: true }), { force: true })) ||
+    (await clickFirstVisible(page, page.getByText("타이어 사이즈로 찾기", { exact: true }), { force: true }));
+  await page.waitForTimeout(sizeTabClicked ? 800 : 300);
+
   await page.evaluate((value) => {
-    const frontInput = document.querySelector("#tireSizeFrSearchInput");
-    if (frontInput) {
-      frontInput.value = value;
-      frontInput.dispatchEvent(new Event("input", { bubbles: true }));
-      frontInput.dispatchEvent(new Event("change", { bubbles: true }));
+    const inputs = [
+      document.querySelector("#searchInput"),
+      document.querySelector("#tireSizeFrSearchInput"),
+      document.querySelector("#tireSizeReSearchInput")
+    ].filter(Boolean);
+    for (const input of inputs) {
+      input.value = value;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.dispatchEvent(new Event("change", { bubbles: true }));
     }
 
     const functionNames = [
@@ -303,11 +436,6 @@ async function openTstationSearchPage(page, platform, _input, target) {
       }
     }
   }, compact);
-
-  await page.waitForLoadState("domcontentloaded", { timeout: 15000 }).catch(() => {});
-  await page.waitForTimeout(3000);
-  await dismissPopups(page);
-  return page.url();
 }
 
 async function dismissPopups(page) {
@@ -660,7 +788,7 @@ async function extractAbcItems(page, input, target) {
       confidence,
       memo: "ABC타이어 사이즈 검색 드로어에서 규격을 선택한 뒤 결과 화면의 가격 후보를 추출했습니다."
     });
-  });
+  }).filter((item) => item.confidence !== "low");
 
   return { blocked: false, items };
 }
