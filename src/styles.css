@@ -291,6 +291,61 @@ svg {
   border-top: 1px solid var(--line);
 }
 
+.platform-picker .panel-heading {
+  margin-bottom: 12px;
+}
+
+.platform-picker-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.platform-picker-actions span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.platform-chip-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.platform-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #fff;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0 10px;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.platform-chip strong {
+  min-width: 34px;
+  color: var(--red);
+  font-size: 11px;
+}
+
+.platform-chip.is-selected {
+  border-color: rgba(15, 139, 141, 0.32);
+  background: #e7f6f4;
+  color: var(--teal-dark);
+}
+
+.platform-chip.is-selected strong {
+  color: var(--green);
+}
+
 .toggle {
   display: inline-flex;
   align-items: center;

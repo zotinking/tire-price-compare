@@ -264,6 +264,7 @@ function render() {
       <section class="workspace">
         ${renderNotice()}
         ${renderSearchPanel()}
+        ${renderPlatformPicker()}
         ${renderMetrics(data)}
         ${renderStatusCards()}
         ${renderComparePanel()}
@@ -324,6 +325,39 @@ function renderSearchPanel() {
   `;
 }
 
+function renderPlatformPicker() {
+  const platforms = getPlatforms();
+  const selectedCount = platforms.filter((platform) => !state.excludedPlatforms.has(platform.platformName)).length;
+  return `
+    <section class="panel platform-picker" aria-label="수집 플랫폼 선택">
+      <div class="panel-heading">
+        <div>
+          <h2>수집 플랫폼</h2>
+          <p>선택된 플랫폼만 로컬 자동화가 실행합니다. 제외한 플랫폼도 여기에서 언제든 복원할 수 있습니다.</p>
+        </div>
+        <div class="platform-picker-actions">
+          <span>${selectedCount}/${platforms.length} 선택</span>
+          <button class="secondary-button" data-action="select-all-platforms">전체 선택</button>
+          <button class="ghost-button" data-action="clear-platforms">전체 제외</button>
+        </div>
+      </div>
+      <div class="platform-chip-grid">
+        ${platforms
+          .map((platform) => {
+            const selected = !state.excludedPlatforms.has(platform.platformName);
+            return `
+              <button class="platform-chip ${selected ? "is-selected" : ""}" data-action="toggle-platform-selection" data-platform="${escapeHtml(platform.platformName)}">
+                <span>${escapeHtml(platform.platformName)}</span>
+                <strong>${selected ? "수집" : "제외"}</strong>
+              </button>
+            `;
+          })
+          .join("")}
+      </div>
+    </section>
+  `;
+}
+
 function renderMetrics(data) {
   return `
     <section class="metric-strip" aria-label="요약">
@@ -337,7 +371,9 @@ function renderMetrics(data) {
 }
 
 function renderStatusCards() {
-  const results = state.results.length ? state.results : makeCollectingResults(state.input).map((result) => ({ ...result, status: "unsupported" }));
+  const baseResults = makeCollectingResults(state.input).map((result) => ({ ...result, status: "unsupported" }));
+  const resultMap = new Map(state.results.map((result) => [result.platformName, result]));
+  const results = baseResults.map((base) => resultMap.get(base.platformName) || base);
 
   return `
     <section class="status-section" aria-label="수집 진행 상태">
@@ -691,6 +727,28 @@ function handleAction(event) {
   if (action === "exclude-platform" && platform) {
     if (state.excludedPlatforms.has(platform)) state.excludedPlatforms.delete(platform);
     else state.excludedPlatforms.add(platform);
+    persist();
+    render();
+    return;
+  }
+
+  if (action === "toggle-platform-selection" && platform) {
+    if (state.excludedPlatforms.has(platform)) state.excludedPlatforms.delete(platform);
+    else state.excludedPlatforms.add(platform);
+    persist();
+    render();
+    return;
+  }
+
+  if (action === "select-all-platforms") {
+    state.excludedPlatforms.clear();
+    persist();
+    render();
+    return;
+  }
+
+  if (action === "clear-platforms") {
+    getPlatforms().forEach((item) => state.excludedPlatforms.add(item.platformName));
     persist();
     render();
     return;
