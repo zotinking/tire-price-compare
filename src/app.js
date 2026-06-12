@@ -85,13 +85,16 @@ async function fetchPrices(input) {
   return payload;
 }
 
-async function runLocalAutomation(input, onStatus) {
+async function runLocalAutomation(input, options = {}, onStatus) {
   const startResponse = await fetch(`${apiBase}/api/run-local-automation`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json"
     },
-    body: JSON.stringify(input)
+    body: JSON.stringify({
+      ...input,
+      excludedPlatforms: options.excludedPlatforms || []
+    })
   });
 
   if (!startResponse.ok) {
@@ -725,18 +728,29 @@ function handleAction(event) {
 }
 
 function startLocalAutomationSearch() {
-  state.results = makeCollectingResults(state.input);
+  state.results = makeCollectingResults(state.input).map((result) =>
+    state.excludedPlatforms.has(result.platformName)
+      ? {
+          ...result,
+          status: "manual_required",
+          errorMessage: "비교 제외로 자동화 실행에서 건너뜁니다."
+        }
+      : result
+  );
   state.notice = "로컬 브라우저 자동화를 시작합니다. Chrome 또는 Edge 창이 뜨면 닫지 말고 기다려주세요.";
   persist();
   render();
 
-  runLocalAutomation(state.input, (status) => {
+  const excludedPlatforms = [...state.excludedPlatforms];
+  runLocalAutomation(state.input, { excludedPlatforms }, (status) => {
     state.notice = status.message || "로컬 브라우저 자동화가 진행 중입니다.";
     render();
   })
     .then((payload) => {
       state.results = payload.results;
-      state.notice = "로컬 자동화가 완료되었습니다. 자동 추출 실패 사이트는 열린 브라우저 탭에서 직접 확인해 수동 보정하세요.";
+      state.notice = excludedPlatforms.length
+        ? `로컬 자동화가 완료되었습니다. 비교 제외 플랫폼 ${excludedPlatforms.length}개는 건너뛰었습니다.`
+        : "로컬 자동화가 완료되었습니다. 자동 추출 실패 사이트는 열린 브라우저 탭에서 직접 확인해 수동 보정하세요.";
       persist();
       render();
     })

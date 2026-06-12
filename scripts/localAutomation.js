@@ -65,13 +65,17 @@ const platforms = [
   }
 ];
 
-function selectedPlatforms() {
+function selectedPlatforms(input = {}) {
   const limit = String(process.env.TIRE_PLATFORM_LIMIT || "")
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
-  if (!limit.length) return platforms;
-  return platforms.filter((platform) => limit.includes(platform.platformName));
+  const excluded = new Set(Array.isArray(input.excludedPlatforms) ? input.excludedPlatforms : []);
+  return platforms.filter((platform) => {
+    if (excluded.has(platform.platformName)) return false;
+    if (limit.length && !limit.includes(platform.platformName)) return false;
+    return true;
+  });
 }
 
 function specCompact(spec) {
@@ -679,7 +683,8 @@ async function main() {
     channel = launched.channel;
     userDataDir = launched.userDataDir;
 
-    for (const platform of selectedPlatforms()) {
+    const targetPlatforms = selectedPlatforms(input);
+    for (const platform of targetPlatforms) {
       await writeJob(jobPath, {
         status: "running",
         message: `${platform.platformName} 수집 중`,
