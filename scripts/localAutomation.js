@@ -273,22 +273,9 @@ async function openTstationSearchPage(page, platform, _input, target) {
   await page.waitForTimeout(1800);
   await dismissPopups(page);
 
-  const compact = specCompact(target.spec);
-  const searchTerms = [
-    specToString(target.spec),
-    `${target.spec.width}/${target.spec.aspectRatio}R${target.spec.rim}`,
-    compact
-  ];
-
   const openedGlobalSearch = await openTstationGlobalSearch(page);
-
-  for (const term of searchTerms) {
-    const searched = await fillAndSubmitTstationGlobalSearch(page, term);
-    if (searched) break;
-  }
-
-  if (await isTstationSearchPopupOpen(page)) {
-    await submitTstationPopupSizeSearch(page, compact);
+  if (openedGlobalSearch) {
+    await submitTstationPopupSizeSearch(page, target.spec);
   }
 
   await page.evaluate((value) => {
@@ -300,42 +287,16 @@ async function openTstationSearchPage(page, platform, _input, target) {
         input.dispatchEvent(new Event("change", { bubbles: true }));
       }
     }
-  }, compact);
+  }, specCompact(target.spec));
 
   if (!openedGlobalSearch) {
-    await openTstationSizeTabSearch(page, compact);
+    await openTstationSizeTabSearch(page, target.spec);
   }
 
   await page.waitForLoadState("domcontentloaded", { timeout: 15000 }).catch(() => {});
   await page.waitForTimeout(3000);
   await dismissPopups(page);
   return page.url();
-}
-
-async function fillAndSubmitTstationGlobalSearch(page, term) {
-  const inputs = page.locator('input#searchInput, input[type="search"], input[placeholder*="차량번호"], input[placeholder*="사이즈"]');
-  const count = await inputs.count();
-
-  for (let index = 0; index < count; index += 1) {
-    const input = inputs.nth(index);
-    try {
-      if (!(await input.isVisible({ timeout: 500 }))) continue;
-      await input.fill(term, { timeout: 3000 });
-      await page.keyboard.press("Enter");
-      await page.waitForTimeout(1800);
-
-      const stillVisible = await input.isVisible({ timeout: 500 }).catch(() => false);
-      if (stillVisible) {
-        await clickFirstVisible(page, page.locator('button:has(.search), a:has(.search), button:has-text("검색")'), { force: true });
-        await page.waitForTimeout(1800);
-      }
-      return true;
-    } catch {
-      // Try the next visible search input.
-    }
-  }
-
-  return false;
 }
 
 async function isTstationSearchPopupOpen(page) {
@@ -371,35 +332,32 @@ async function openTstationGlobalSearch(page) {
   return false;
 }
 
-async function submitTstationPopupSizeSearch(page, compact) {
+async function clickTstationSizeButton(page, value) {
+  const exact = new RegExp(`^\\s*${escapeRegex(value)}\\s*$`);
+  const button = page.locator("#searchPopup .data-container.on button.size-btn").filter({ hasText: exact }).first();
+  await button.scrollIntoViewIfNeeded({ timeout: 3000 }).catch(() => {});
+  await button.click({ force: true, timeout: 5000 });
+  await page.waitForTimeout(700);
+}
+
+async function submitTstationPopupSizeSearch(page, spec) {
   await clickFirstVisible(page, page.getByText("타이어 사이즈로 찾기", { exact: true }), { force: true });
   await page.waitForTimeout(700);
 
-  const searched = await fillAndSubmitTstationGlobalSearch(page, compact);
-  if (searched) return;
+  await clickTstationSizeButton(page, String(spec.width));
+  await clickTstationSizeButton(page, String(spec.aspectRatio));
+  await clickTstationSizeButton(page, String(spec.rim));
 
-  await page.evaluate((value) => {
-    const inputs = [
-      document.querySelector("#searchPopup #searchInput"),
-      document.querySelector("#searchPopup #tireSizeFrSearchInput"),
-      document.querySelector("#searchPopup #tireSizeReSearchInput"),
-      document.querySelector("#tireSizeFrSearchInput"),
-      document.querySelector("#tireSizeReSearchInput")
-    ].filter(Boolean);
-
-    for (const input of inputs) {
-      input.value = value;
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-      input.dispatchEvent(new Event("change", { bubbles: true }));
-    }
-
-    const tireShopButton = Array.from(document.querySelectorAll("button"))
-      .find((button) => /타이어\s*쇼핑하기|결과\s*보기|조회하기|검색/.test(button.innerText || ""));
-    tireShopButton?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
-  }, compact);
+  const shoppingButton = page
+    .locator("#searchPopup .data-container.on button")
+    .filter({ hasText: /^\s*타이어\s*쇼핑하기\s*$/ })
+    .first();
+  await shoppingButton.click({ force: true, timeout: 5000 });
+  await page.waitForLoadState("domcontentloaded", { timeout: 30000 }).catch(() => {});
+  await page.waitForTimeout(2500);
 }
 
-async function openTstationSizeTabSearch(page, compact) {
+async function openTstationSizeTabSearch(page, spec) {
   await clickFirstVisible(page, page.locator("button.searchCarCall-newVersion"), { force: true });
   await page.waitForTimeout(1200);
 
@@ -408,34 +366,17 @@ async function openTstationSizeTabSearch(page, compact) {
     (await clickFirstVisible(page, page.getByText("타이어 사이즈로 찾기", { exact: true }), { force: true }));
   await page.waitForTimeout(sizeTabClicked ? 800 : 300);
 
-  await page.evaluate((value) => {
-    const inputs = [
-      document.querySelector("#searchInput"),
-      document.querySelector("#tireSizeFrSearchInput"),
-      document.querySelector("#tireSizeReSearchInput")
-    ].filter(Boolean);
-    for (const input of inputs) {
-      input.value = value;
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-      input.dispatchEvent(new Event("change", { bubbles: true }));
-    }
+  await clickTstationSizeButton(page, String(spec.width));
+  await clickTstationSizeButton(page, String(spec.aspectRatio));
+  await clickTstationSizeButton(page, String(spec.rim));
 
-    const functionNames = [
-      "searchEngineCar",
-      "searchCarHeader",
-      "searchCarHeaderNewVersion",
-      "searchTireSize",
-      "searchTireList",
-      "getTireList"
-    ];
-    for (const name of functionNames) {
-      try {
-        if (typeof window[name] === "function") window[name]();
-      } catch {
-        // Best-effort only. The visible browser remains open when extraction fails.
-      }
-    }
-  }, compact);
+  const shoppingButton = page
+    .locator("#searchPopup .data-container.on button")
+    .filter({ hasText: /^\s*타이어\s*쇼핑하기\s*$/ })
+    .first();
+  await shoppingButton.click({ force: true, timeout: 5000 });
+  await page.waitForLoadState("domcontentloaded", { timeout: 30000 }).catch(() => {});
+  await page.waitForTimeout(2500);
 }
 
 async function dismissPopups(page) {
@@ -755,15 +696,20 @@ async function extractAbcItems(page, input, target) {
     .toLowerCase()
     .split(/\s+/)
     .filter((token) => token.length >= 2);
+  const modelAliases = [];
+  if (/cross\s*climate|crossclimate/i.test(String(input.modelName || input.keyword || ""))) {
+    modelAliases.push("크로스클라이밋", "크로스 클라이밋", "crossclimate", "cross climate");
+  }
 
   const items = rawItems.items.slice(0, 5).map((item, index) => {
     const text = [item.productName, item.rawText].filter(Boolean).join(" ").toLowerCase();
     const brand = String(input.brand || "").toLowerCase();
     const brandKo = brand === "michelin" ? "미쉐린" : brand;
     const brandMatch = brand ? text.includes(brand) || text.includes(brandKo) : true;
+    const aliasMatch = modelAliases.some((alias) => text.includes(alias));
     const modelMatchCount = modelTokens.filter((token) => text.includes(token)).length;
-    const modelMatch = !modelTokens.length || modelMatchCount >= Math.min(2, modelTokens.length);
-    const confidence = brandMatch && modelMatch ? "high" : brandMatch || modelMatch ? "medium" : "low";
+    const modelMatch = aliasMatch || !modelTokens.length || modelMatchCount >= Math.min(2, modelTokens.length);
+    const confidence = modelMatch ? "high" : brandMatch ? "medium" : "low";
 
     return normalizeItem({
       id: `local-ABC타이어-${target.side}-${Date.now()}-${index}`,
@@ -788,7 +734,12 @@ async function extractAbcItems(page, input, target) {
       confidence,
       memo: "ABC타이어 사이즈 검색 드로어에서 규격을 선택한 뒤 결과 화면의 가격 후보를 추출했습니다."
     });
-  }).filter((item) => item.confidence !== "low");
+  }).filter((item) => {
+    if (item.confidence === "low") return false;
+    if (!modelAliases.length) return true;
+    const productName = String(item.productName || "").toLowerCase();
+    return modelAliases.some((alias) => productName.includes(alias));
+  });
 
   return { blocked: false, items };
 }
@@ -812,41 +763,40 @@ async function extractTstationItems(page, input, target) {
         return { blocked: true, items: [] };
       }
 
-      const pricePattern = /([0-9]{1,3}(?:,[0-9]{3})+)\s*원/g;
-      const hasPricePattern = /[0-9]{1,3}(?:,[0-9]{3})+\s*원/;
-      const cards = Array.from(document.querySelectorAll(".tire-list-item, [class*=product], [class*=goods], article, li, a, section, div"))
-        .map((node) => ({ node, text: textOf(node) }))
-        .filter(({ text }) => text.length >= 30 && text.length <= 1800)
-        .filter(({ text }) => hasPricePattern.test(text));
-
       const items = [];
       const seen = new Set();
+      const specVisible =
+        bodyText.includes(currentSpec) ||
+        document.querySelector("#tireSizeFr")?.value === compactSpec ||
+        document.querySelector("#tireSizeRe")?.value === compactSpec;
+      const pricePattern = /([0-9]{1,3}(?:,[0-9]{3})+)\s*원/g;
+      let match;
 
-      for (const { node, text } of cards) {
-        pricePattern.lastIndex = 0;
-        const prices = Array.from(text.matchAll(pricePattern))
-          .map((match) => numberFrom(match[1]))
-          .filter((price) => price && price >= 50000);
-        if (!prices.length) continue;
+      while ((match = pricePattern.exec(bodyText)) && items.length < 12) {
+        const unitPrice = numberFrom(match[1]);
+        if (!unitPrice || unitPrice < 50000) continue;
 
-        const compactText = text.replace(/[^\d]/g, "");
-        const specMatch =
-          text.includes(currentSpec) ||
-          compactText.includes(compactSpec) ||
-          document.querySelector("#tireSizeFr")?.value === compactSpec ||
-          document.querySelector("#tireSizeRe")?.value === compactSpec;
-        if (!specMatch) continue;
+        const after = bodyText.slice(match.index, match.index + 32);
+        if (/원\s*(?:이하|이상|~)|~\s*[0-9]{1,3}(?:,[0-9]{3})+\s*원/.test(after)) continue;
 
-        const link = node.querySelector?.("a[href]") || node.closest?.("a[href]");
-        const href = link ? new URL(link.getAttribute("href"), location.href).toString() : location.href;
-        const nameCandidates = Array.from(node.querySelectorAll?.("h1, h2, h3, strong, a, [class*=name], [class*=title], [class*=ptrn]") || [])
-          .map((candidate) => textOf(candidate))
-          .filter((candidate) => candidate.length >= 4)
-          .filter((candidate) => !/[0-9]{1,3}(?:,[0-9]{3})+\s*원|주유권|평점|리뷰|브랜드/.test(candidate))
-          .sort((a, b) => b.length - a.length);
-        const productName = (nameCandidates[0] || text.slice(0, 120)).replace(/\s+/g, " ").trim().slice(0, 140);
-        const unitPrice = Math.min(...prices);
-        const key = `${productName}-${unitPrice}-${href}`;
+        const before = bodyText.slice(Math.max(0, match.index - 140), match.index);
+        const afterPreviousPrice = before.split(/[0-9]{1,3}(?:,[0-9]{3})+\s*원/).pop() || before;
+        const rawName = afterPreviousPrice
+          .replace(/.*(?:상품간 비교|가격 낮은 순|가격 높은 순|평점 높은 순|할인 높은 순|최신순|가성비 Good|최고 할인율!)/, "")
+          .replace(/(?:브랜드\s*판매\d+위|[0-9]+만원\s*주유권|흡음재\s*타이어|런플랫\s*타이어|프리미엄|스탠다드|정숙\/승차감|사계절용|모든 날씨용|겨울용|여름용)/g, " ")
+          .replace(/[0-9](?:\.[0-9])?\s*\([0-9,]+\)/g, " ")
+          .replace(/[0-9]{1,2}%\s*$/, "")
+          .replace(/\s+/g, " ")
+          .trim();
+        const productName = rawName.split(/\s+/).slice(-6).join(" ").trim();
+        if (
+          productName.length < 3 ||
+          /금액|조건|해당|상품|초기화|상담|FAMILY|검색|결과|전체|하중지수|속도지수|이하|이상/.test(productName)
+        ) {
+          continue;
+        }
+
+        const key = `${productName}-${unitPrice}`;
         if (seen.has(key)) continue;
         seen.add(key);
 
@@ -855,16 +805,15 @@ async function extractTstationItems(page, input, target) {
           unitPrice,
           spec: currentSpec,
           shippingFee: 0,
-          installationFee: /장착비\s*별도|장착\s*별도/.test(text) ? undefined : 0,
-          installIncluded: /장착비\s*별도|장착\s*별도/.test(text) ? false : undefined,
-          availableDate: /품절|일시품절/.test(text) ? "품절" : "확인 필요",
-          productUrl: href,
-          rawText: text.slice(0, 500)
+          installationFee: 0,
+          installIncluded: undefined,
+          availableDate: "확인 필요",
+          productUrl: location.href,
+          rawText: `${before.slice(-180)} ${match[0]} ${after}`.slice(0, 500)
         });
-        if (items.length >= 8) break;
       }
 
-      return { blocked: false, items };
+      return { blocked: false, items: specVisible ? items : [] };
     },
     { currentSpec: specText, compactSpec: compact }
   );
@@ -877,15 +826,20 @@ async function extractTstationItems(page, input, target) {
     .toLowerCase()
     .split(/\s+/)
     .filter((token) => token.length >= 2);
+  const modelAliases = [];
+  if (/cross\s*climate|crossclimate/i.test(String(input.modelName || input.keyword || ""))) {
+    modelAliases.push("크로스클라이밋", "크로스 클라이밋", "crossclimate", "cross climate");
+  }
 
   const items = rawItems.items.slice(0, 5).map((item, index) => {
     const text = [item.productName, item.rawText].filter(Boolean).join(" ").toLowerCase();
     const brand = String(input.brand || "").toLowerCase();
     const brandKo = brand === "michelin" ? "미쉐린" : brand;
     const brandMatch = brand ? text.includes(brand) || text.includes(brandKo) : true;
+    const aliasMatch = modelAliases.some((alias) => text.includes(alias));
     const modelMatchCount = modelTokens.filter((token) => text.includes(token)).length;
-    const modelMatch = !modelTokens.length || modelMatchCount >= Math.min(2, modelTokens.length);
-    const confidence = brandMatch && modelMatch ? "high" : brandMatch || modelMatch ? "medium" : "low";
+    const modelMatch = aliasMatch || !modelTokens.length || modelMatchCount >= Math.min(2, modelTokens.length);
+    const confidence = modelMatch ? "high" : brandMatch ? "medium" : "low";
 
     return normalizeItem({
       id: `local-티스테이션-${target.side}-${Date.now()}-${index}`,
@@ -910,7 +864,12 @@ async function extractTstationItems(page, input, target) {
       confidence,
       memo: "티스테이션 사이즈 검색 상태에서 가격이 노출된 경우 추출합니다. 가격 미노출 시 열린 브라우저에서 매장/차량 확인이 필요합니다."
     });
-  }).filter((item) => item.confidence !== "low");
+  }).filter((item) => {
+    if (item.confidence === "low") return false;
+    if (!modelAliases.length) return true;
+    const productName = String(item.productName || "").toLowerCase();
+    return modelAliases.some((alias) => productName.includes(alias));
+  });
 
   return { blocked: false, items };
 }
