@@ -235,8 +235,11 @@ async function extractTirepickItems(page, input, target) {
     }
 
     const text = document.body.innerText.replace(/\s+/g, " ");
-    const escaped = currentSpec.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const pattern = new RegExp(`((?:품절\\s+|일시품절\\s+)?[가-힣A-Za-z0-9 .™'()*\\[\\]/_+-]{8,180}?)\\s+${escaped}\\s+([0-9]{1,3}(?:,[0-9]{3})+)원`, "g");
+    const [sizePrefix, rim] = currentSpec.split("R");
+    const escapedPrefix = sizePrefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const escapedRim = rim.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const specPattern = `${escapedPrefix}(?:ZR|R)${escapedRim}`;
+    const pattern = new RegExp(`((?:품절\\s+|일시품절\\s+)?[가-힣A-Za-z0-9 .™'()*\\[\\]/_+-]{8,180}?)\\s+${specPattern}\\s+(?:[0-9]{1,2}%\\s+)?([0-9]{1,3}(?:,[0-9]{3})+)원`, "g");
     const items = [];
     const seen = new Set();
     let match;
