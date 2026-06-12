@@ -31,7 +31,7 @@ npm run dev
 
 환경 변수:
 
-- `TIRE_BROWSER_CHANNEL`: `msedge` 또는 `chrome`을 지정합니다. 기본값은 `msedge`입니다.
+- `TIRE_BROWSER_CHANNEL`: `chrome` 또는 `msedge`를 지정합니다. 기본값은 `chrome`이고, Chrome 실행에 실패하면 Edge를 fallback으로 시도합니다.
 - `TIRE_BROWSER_USER_DATA_DIR`: 자동화용 브라우저 프로필 경로를 지정합니다. 기본값은 `.browser-profile`입니다.
 - `TIRE_KEEP_BROWSER_OPEN_MS`: 실패 탭을 열린 상태로 유지할 시간입니다. 기본값은 10분입니다.
 

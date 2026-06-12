@@ -116,7 +116,7 @@ async function writeJob(jobPath, patch) {
 
 async function launchContext() {
   const userDataDir = resolve(process.env.TIRE_BROWSER_USER_DATA_DIR || ".browser-profile");
-  const channel = process.env.TIRE_BROWSER_CHANNEL || "msedge";
+  const channel = process.env.TIRE_BROWSER_CHANNEL || "chrome";
   const baseOptions = {
     headless: false,
     viewport: { width: 1440, height: 920 },
