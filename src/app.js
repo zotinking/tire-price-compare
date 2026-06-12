@@ -27,7 +27,7 @@ const state = {
   excludedPlatforms: new Set(),
   selectedItemId: null,
   manualPlatform: "ABC타이어",
-  notice: "기본 예시가 입력되어 있습니다. 자동 검색을 누르면 공개 페이지 기반 실제 수집을 먼저 시도합니다."
+  notice: "기본 예시가 입력되어 있습니다. 로컬 자동화를 실행하면 이 PC의 Chrome/Edge 브라우저에서 가격 후보를 추출합니다."
 };
 
 const saved = loadState();
@@ -82,6 +82,75 @@ async function fetchPrices(input) {
   }
 
   return payload;
+}
+
+async function runLocalAutomation(input, onStatus) {
+  const startResponse = await fetch(`${apiBase}/api/run-local-automation`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(input)
+  });
+
+  if (!startResponse.ok) {
+    throw new Error(`로컬 자동화 실행 오류: HTTP ${startResponse.status}`);
+  }
+
+  const startPayload = await startResponse.json();
+  if (!startPayload.jobId) {
+    throw new Error("로컬 자동화 작업 ID를 받지 못했습니다.");
+  }
+
+  const status = await waitForAutomation(startPayload.jobId, onStatus);
+  if (status.status === "failed") {
+    throw new Error(status.message || "로컬 자동화가 실패했습니다.");
+  }
+
+  return loadLocalResults();
+}
+
+async function waitForAutomation(jobId, onStatus) {
+  const startedAt = Date.now();
+  let lastMessage = "";
+
+  while (Date.now() - startedAt < 10 * 60 * 1000) {
+    const response = await fetch(`${apiBase}/api/automation-status?jobId=${encodeURIComponent(jobId)}`);
+    if (!response.ok) {
+      throw new Error(`자동화 상태 확인 오류: HTTP ${response.status}`);
+    }
+
+    const status = await response.json();
+    if (status.message && status.message !== lastMessage) {
+      lastMessage = status.message;
+      onStatus?.(status);
+    }
+
+    if (["completed", "failed"].includes(status.status)) {
+      return status;
+    }
+
+    await sleep(1800);
+  }
+
+  throw new Error("로컬 자동화 상태 확인 시간이 초과되었습니다.");
+}
+
+async function loadLocalResults() {
+  const response = await fetch(`${apiBase}/api/local-results`);
+  if (!response.ok) {
+    throw new Error(`로컬 결과 JSON 읽기 오류: HTTP ${response.status}`);
+  }
+
+  const payload = await response.json();
+  if (!Array.isArray(payload.results)) {
+    throw new Error("로컬 결과 JSON 형식이 올바르지 않습니다.");
+  }
+  return payload;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function icon(name) {
@@ -176,11 +245,12 @@ function render() {
     <header class="topbar">
       <div>
         <h1>타이어 가격 비교</h1>
-        <p>공개 페이지 수집 결과와 수동 보정값을 한 화면에서 비교합니다.</p>
+        <p>로컬 브라우저 자동화 결과와 수동 보정값을 한 화면에서 비교합니다.</p>
       </div>
       <div class="topbar-actions">
         <button class="ghost-button" data-action="clear-storage" title="저장 데이터 초기화">${icon("trash")}초기화</button>
-        <button class="primary-button" data-action="auto-search" title="자동 검색 실행">${icon("search")}자동 검색</button>
+        <button class="secondary-button" data-action="load-local-results" title="저장된 JSON 결과 불러오기">${icon("refresh")}JSON 불러오기</button>
+        <button class="primary-button" data-action="auto-search" title="로컬 자동화 실행">${icon("search")}로컬 자동화 실행</button>
       </div>
     </header>
 
@@ -220,7 +290,7 @@ function renderSearchPanel() {
       <div class="panel-heading">
         <div>
           <h2>검색 조건</h2>
-          <p>앞/뒤 규격이 다른 차량을 기준으로 총액을 따로 계산합니다.</p>
+          <p>입력값은 로컬 Playwright 자동화가 브라우저에서 검색할 조건으로 사용됩니다.</p>
         </div>
         <button class="secondary-button" data-action="save-search" title="현재 조건과 결과 저장">${icon("save")}검색 조건 저장</button>
       </div>
@@ -270,7 +340,7 @@ function renderStatusCards() {
     <section class="status-section" aria-label="수집 진행 상태">
       <div class="section-title-row">
         <h2>수집 진행 상태</h2>
-        <button class="text-button" data-action="retry-failed">${icon("refresh")}실패 플랫폼 다시 시도</button>
+        <button class="text-button" data-action="retry-failed">${icon("refresh")}로컬 자동화 다시 실행</button>
       </div>
       <div class="status-grid">
         ${results.map(renderStatusCard).join("")}
@@ -310,7 +380,7 @@ function renderComparePanel() {
       <div class="panel-heading table-heading">
         <div>
           <h2>가격 비교</h2>
-          <p>공개 페이지에서 읽은 후보 가격입니다. 상세 페이지에서 배송비/장착비를 확인하세요.</p>
+          <p>사용자 PC의 브라우저 화면에서 읽은 후보 가격입니다. 상세 조건은 열린 탭에서 확인하세요.</p>
         </div>
         <div class="table-controls">
           <label>
@@ -483,12 +553,12 @@ function renderHistoryPanel() {
                       <strong>${result.platformName}</strong>
                       <span>${labelForStatus(result.status)}</span>
                     </div>
-                    <a href="${result.searchUrl}" target="_blank" rel="noreferrer">${icon("link")}검색</a>
+                    <a href="${result.searchUrl}" target="_blank" rel="noreferrer">${icon("link")}열기</a>
                   </div>
                 `
               )
               .join("")
-          : `<p class="muted">자동 검색 후 확인 대상이 여기에 표시됩니다.</p>`
+          : `<p class="muted">로컬 자동화 후 확인 대상이 여기에 표시됩니다.</p>`
       }
     </section>
   `;
@@ -546,22 +616,20 @@ function handleAction(event) {
   const platform = button.dataset.platform;
 
   if (action === "auto-search") {
-    state.results = makeCollectingResults(state.input);
-    state.notice = "공개 검색 페이지에서 실제 가격 후보를 수집하고 있습니다. 차단되는 플랫폼은 수동 확인으로 표시됩니다.";
-    persist();
-    render();
+    startLocalAutomationSearch();
+    return;
+  }
 
-    fetchPrices(state.input)
+  if (action === "load-local-results") {
+    loadLocalResults()
       .then((payload) => {
         state.results = payload.results;
-        state.notice = "실제 수집 시도가 완료되었습니다. 차단/미지원 플랫폼은 검색 링크에서 확인해 수동 보정하세요.";
+        state.notice = `저장된 로컬 자동화 JSON을 불러왔습니다. 수집 시각: ${formatDate(payload.collectedAt)}`;
         persist();
         render();
       })
       .catch((error) => {
-        state.results = fetchMockPrices(state.input);
-        state.notice = `${error.message}. 현재 환경에서는 예시 가격으로 전환했습니다. 로컬 Node 서버 또는 배포된 백엔드가 필요합니다.`;
-        persist();
+        state.notice = `${error.message}. 먼저 로컬 자동화를 실행해 JSON 파일을 생성하세요.`;
         render();
       });
     return;
@@ -598,18 +666,7 @@ function handleAction(event) {
   }
 
   if (action === "retry-failed") {
-    const fetched = fetchMockPrices(state.input);
-    state.results = state.results.length
-      ? state.results.map((result) => {
-          if (["failed", "manual_required", "blocked", "unsupported"].includes(result.status)) {
-            return fetched.find((next) => next.platformName === result.platformName) || result;
-          }
-          return result;
-        })
-      : fetched;
-    state.notice = "실패 플랫폼을 다시 시도했습니다. 자동화 제한이 있는 곳은 상태와 검색 링크를 유지합니다.";
-    persist();
-    render();
+    startLocalAutomationSearch();
     return;
   }
 
@@ -647,6 +704,30 @@ function handleAction(event) {
     state.selectedItemId = null;
     render();
   }
+}
+
+function startLocalAutomationSearch() {
+  state.results = makeCollectingResults(state.input);
+  state.notice = "로컬 브라우저 자동화를 시작합니다. Chrome 또는 Edge 창이 뜨면 닫지 말고 기다려주세요.";
+  persist();
+  render();
+
+  runLocalAutomation(state.input, (status) => {
+    state.notice = status.message || "로컬 브라우저 자동화가 진행 중입니다.";
+    render();
+  })
+    .then((payload) => {
+      state.results = payload.results;
+      state.notice = "로컬 자동화가 완료되었습니다. 자동 추출 실패 사이트는 열린 브라우저 탭에서 직접 확인해 수동 보정하세요.";
+      persist();
+      render();
+    })
+    .catch((error) => {
+      state.results = [];
+      state.notice = `${error.message}. 이 기능은 로컬 Node 서버와 Chrome/Edge가 설치된 PC에서 실행해야 합니다.`;
+      persist();
+      render();
+    });
 }
 
 function handleManualSubmit(event) {

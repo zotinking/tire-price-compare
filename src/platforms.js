@@ -2,7 +2,7 @@ import { normalizeItem, specToString } from "./price.js";
 
 export const fetchStatuses = {
   success: "자동 수집 성공",
-  partial: "예시 가격",
+  partial: "부분 수집",
   failed: "수집 실패",
   manual_required: "사용자 확인 필요",
   blocked: "접근 제한 의심",

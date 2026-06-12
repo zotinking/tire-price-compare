@@ -1,10 +1,17 @@
 import { createServer } from "node:http";
-import { readFile } from "node:fs/promises";
-import { extname, join, normalize } from "node:path";
+import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
+import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, extname, join, normalize } from "node:path";
 import { fetchLivePrices } from "./src/liveAdapters.js";
 
 const port = Number(process.env.PORT || 4173);
 const root = process.cwd();
+const dataDir = join(root, "data");
+const jobsDir = join(dataDir, "jobs");
+const latestResultsPath = join(dataDir, "latest-results.json");
+const automationInputPath = join(dataDir, "automation-input.json");
+const automationJobs = new Map();
 
 const contentTypes = {
   ".html": "text/html; charset=utf-8",
@@ -23,6 +30,87 @@ function sendJson(res, status, body) {
     "Access-Control-Allow-Methods": "POST, OPTIONS"
   });
   res.end(JSON.stringify(body));
+}
+
+async function writeJsonFile(path, body) {
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, `${JSON.stringify(body, null, 2)}\n`, "utf8");
+}
+
+async function readJsonFile(path) {
+  return JSON.parse(await readFile(path, "utf8"));
+}
+
+async function startLocalAutomation(input) {
+  await mkdir(jobsDir, { recursive: true });
+  const jobId = randomUUID();
+  const jobPath = join(jobsDir, `${jobId}.json`);
+  const logPath = join(jobsDir, `${jobId}.log`);
+  const errPath = join(jobsDir, `${jobId}.err.log`);
+  await writeJsonFile(automationInputPath, input);
+  await writeJsonFile(jobPath, {
+    jobId,
+    status: "queued",
+    message: "로컬 브라우저 자동화 대기 중",
+    outputPath: latestResultsPath,
+    updatedAt: new Date().toISOString()
+  });
+
+  const child = spawn(process.execPath, ["scripts/localAutomation.js", automationInputPath, latestResultsPath, jobPath], {
+    cwd: root,
+    detached: true,
+    stdio: ["ignore", "pipe", "pipe"],
+    env: {
+      ...process.env,
+      TIRE_AUTOMATION_JOB_ID: jobId
+    }
+  });
+
+  automationJobs.set(jobId, {
+    jobId,
+    status: "running",
+    childPid: child.pid,
+    jobPath,
+    logPath,
+    errPath,
+    startedAt: new Date().toISOString()
+  });
+
+  child.stdout.on("data", (chunk) => appendLog(logPath, chunk));
+  child.stderr.on("data", (chunk) => appendLog(errPath, chunk));
+  child.on("exit", (code) => {
+    const job = automationJobs.get(jobId);
+    if (job) {
+      automationJobs.set(jobId, {
+        ...job,
+        exitedAt: new Date().toISOString(),
+        exitCode: code
+      });
+    }
+  });
+  child.unref();
+
+  return { jobId, jobPath };
+}
+
+async function appendLog(path, chunk) {
+  await mkdir(jobsDir, { recursive: true });
+  await appendFile(path, chunk).catch(() => {});
+}
+
+async function readJobStatus(jobId) {
+  const safeJobId = String(jobId || "").replace(/[^a-f0-9-]/gi, "");
+  if (!safeJobId) return null;
+  const jobPath = join(jobsDir, `${safeJobId}.json`);
+  try {
+    const fileStatus = await readJsonFile(jobPath);
+    return {
+      ...automationJobs.get(safeJobId),
+      ...fileStatus
+    };
+  } catch {
+    return automationJobs.get(safeJobId) || null;
+  }
 }
 
 async function readJsonBody(req) {
@@ -49,6 +137,7 @@ function resolveRequestPath(urlPath) {
 
 createServer(async (req, res) => {
   const requestUrl = req.url || "/";
+  const parsedUrl = new URL(requestUrl, `http://${req.headers.host || "localhost"}`);
 
   if (requestUrl.startsWith("/api/fetch-prices")) {
     if (req.method === "OPTIONS") {
@@ -72,6 +161,56 @@ createServer(async (req, res) => {
     } catch (error) {
       sendJson(res, 500, {
         error: "가격 수집 중 오류가 발생했습니다.",
+        detail: error.message
+      });
+    }
+    return;
+  }
+
+  if (requestUrl.startsWith("/api/run-local-automation")) {
+    if (req.method === "OPTIONS") {
+      sendJson(res, 204, {});
+      return;
+    }
+
+    if (req.method !== "POST") {
+      sendJson(res, 405, { error: "Method not allowed" });
+      return;
+    }
+
+    try {
+      const input = await readJsonBody(req);
+      const job = await startLocalAutomation(input);
+      sendJson(res, 202, {
+        jobId: job.jobId,
+        status: "running",
+        message: "로컬 브라우저 자동화를 시작했습니다. 브라우저 창이 뜨면 닫지 말고 기다려주세요."
+      });
+    } catch (error) {
+      sendJson(res, 500, {
+        error: "로컬 자동화 실행 중 오류가 발생했습니다.",
+        detail: error.message
+      });
+    }
+    return;
+  }
+
+  if (requestUrl.startsWith("/api/automation-status")) {
+    const job = await readJobStatus(parsedUrl.searchParams.get("jobId"));
+    if (!job) {
+      sendJson(res, 404, { error: "작업을 찾을 수 없습니다." });
+      return;
+    }
+    sendJson(res, 200, job);
+    return;
+  }
+
+  if (requestUrl.startsWith("/api/local-results")) {
+    try {
+      sendJson(res, 200, await readJsonFile(latestResultsPath));
+    } catch (error) {
+      sendJson(res, 404, {
+        error: "저장된 로컬 자동화 결과가 없습니다.",
         detail: error.message
       });
     }
