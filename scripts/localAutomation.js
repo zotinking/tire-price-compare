@@ -111,6 +111,19 @@ function cleanProductName(value) {
     .slice(0, 140);
 }
 
+function cleanDanawaProductName(value, specText) {
+  const name = cleanProductName(value);
+  const specIndex = name.lastIndexOf(specText);
+  if (specIndex < 0) return name;
+  const throughSpec = name.slice(0, specIndex + specText.length);
+  const markers = ["미쉐린타이어", "미쉐린", "한국타이어", "금호", "넥센", "브리지스톤", "콘티넨탈", "피렐리", "굿이어", "MICHELIN"];
+  const markerIndex = markers.reduce((latest, marker) => {
+    const index = throughSpec.lastIndexOf(marker);
+    return index > latest ? index : latest;
+  }, -1);
+  return (markerIndex >= 0 ? throughSpec.slice(markerIndex) : throughSpec).trim();
+}
+
 function parseArgs() {
   const [, , inputPath, outputPath, jobPath] = process.argv;
   if (!inputPath || !outputPath || !jobPath) {
@@ -300,7 +313,109 @@ async function extractTirepickItems(page, input, target) {
   return { blocked: false, items };
 }
 
+async function extractDanawaItems(page, input, target) {
+  const specText = specToString(target.spec);
+  const rawItems = await page.evaluate((currentSpec) => {
+    function numberFrom(value) {
+      const cleaned = String(value || "").replace(/[^\d]/g, "");
+      return cleaned ? Number(cleaned) : undefined;
+    }
+
+    function cleanName(value) {
+      return String(value || "")
+        .replace(/^.*?(?:배송비포함|상세옵션펼침|인기상품순)\s+/i, "")
+        .replace(/\s*(?:26\\.\\d{2}|25\\.\\d{2}|24\\.\\d{2}|22\\.\\d{2})\\.?\s*등록.*$/i, "")
+        .replace(/\s+/g, " ")
+        .trim();
+    }
+
+    const text = document.body.innerText.replace(/\s+/g, " ");
+    const escaped = currentSpec.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const pattern = new RegExp(`([^\\n]{0,180}?${escaped}[^\\n]{0,260}?)([0-9]{1,3}(?:,[0-9]{3})+)\\s*원`, "gi");
+    const items = [];
+    const seen = new Set();
+    let match;
+
+    while ((match = pattern.exec(text)) && items.length < 12) {
+      const rawName = match[1];
+      const unitPrice = numberFrom(match[2]);
+      if (!unitPrice || unitPrice < 50000) continue;
+      if (/검색결과|재검색|검색 상품목록|파워링크|광고 신청/.test(rawName)) continue;
+      const productName = cleanName(rawName);
+      if (!productName || !productName.includes(currentSpec)) continue;
+      const key = `${productName}-${unitPrice}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      items.push({
+        productName,
+        unitPrice,
+        spec: currentSpec,
+        shippingFee: /무료배송/.test(match[0]) ? 0 : 0,
+        installationFee: /무료장착|전국무료장착|지정점무료장착|출장무료장착/.test(match[0]) ? 0 : 0,
+        installIncluded: /무료장착|전국무료장착|지정점무료장착|출장무료장착/.test(match[0]) ? true : undefined,
+        availableDate: "확인 필요",
+        productUrl: location.href,
+        rawText: match[0]
+      });
+    }
+
+    return {
+      blocked: /captcha|캡차|로봇|비정상|접근이 제한|access denied|403|보안문자/i.test(text),
+      items
+    };
+  }, specText);
+
+  if (rawItems.blocked) {
+    return { blocked: true, items: [] };
+  }
+
+  const modelTokens = String(input.modelName || input.keyword || "")
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((token) => token.length >= 2);
+
+  const items = rawItems.items.map((item, index) => {
+    const text = [item.productName, item.spec, item.rawText].filter(Boolean).join(" ").toLowerCase();
+    const brand = String(input.brand || "").toLowerCase();
+    const brandKo = brand === "michelin" ? "미쉐린" : brand;
+    const brandMatch = brand ? text.includes(brand) || text.includes(brandKo) : true;
+    const modelMatchCount = modelTokens.filter((token) => text.includes(token)).length;
+    const modelMatch = !modelTokens.length || modelMatchCount >= Math.min(2, modelTokens.length);
+    const confidence = brandMatch && modelMatch ? "high" : brandMatch || modelMatch ? "medium" : "low";
+
+    return normalizeItem({
+      id: `local-다나와-${target.side}-${Date.now()}-${index}`,
+      platformName: "다나와",
+      side: target.side,
+      sideLabel: target.label,
+      productName: cleanDanawaProductName(item.productName, specText) || "다나와 상품",
+      brand: input.brand,
+      modelName: input.modelName || input.keyword,
+      spec: item.spec || specText,
+      unitPrice: item.unitPrice,
+      quantity: target.quantity,
+      shippingFee: item.shippingFee || 0,
+      installationFee: item.installationFee || 0,
+      discount: 0,
+      installIncluded: item.installIncluded,
+      shopName: "다나와",
+      shopAddress: input.region || "",
+      availableDate: item.availableDate || "확인 필요",
+      productUrl: item.productUrl,
+      collectedAt: new Date().toISOString(),
+      confidence,
+      memo: "다나와 검색 결과 텍스트에서 현재 규격과 가격을 함께 포함한 후보를 추출했습니다."
+    });
+  });
+
+  return { blocked: false, items };
+}
+
 async function extractVisibleItems(page, platformName, input, target) {
+  if (platformName === "다나와") {
+    return extractDanawaItems(page, input, target);
+  }
+
   if (platformName === "타이어픽") {
     return extractTirepickItems(page, input, target);
   }
