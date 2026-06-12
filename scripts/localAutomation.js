@@ -20,12 +20,12 @@ const platforms = [
   {
     platformName: "ABC타이어",
     homeUrl: "https://abctire.co.kr/",
-    searchUrl: (query) => `https://abctire.co.kr/tire-search?keyword=${encodeURIComponent(query)}`
+    searchUrl: () => "https://abctire.co.kr/"
   },
   {
     platformName: "티스테이션",
     homeUrl: "https://www.tstation.com/",
-    searchUrl: (_query, _input, target) => `https://www.tstation.com/tire/sizes?front=${specCompact(target.spec)}`
+    searchUrl: () => "https://www.tstation.com/tire/sizes"
   },
   {
     platformName: "타이어프로",
@@ -180,12 +180,134 @@ async function launchContext() {
 }
 
 async function openSearchPage(page, platform, input, target) {
+  if (platform.platformName === "ABC타이어") {
+    return openAbcSearchPage(page, platform, input, target);
+  }
+
+  if (platform.platformName === "티스테이션") {
+    return openTstationSearchPage(page, platform, input, target);
+  }
+
   const query = queryFor(input, target.spec);
   const targetUrl = platform.searchUrl(query, input, target);
   await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
   await page.waitForTimeout(2500);
   await dismissPopups(page);
   return targetUrl;
+}
+
+async function clickFirstVisible(page, locator, options = {}) {
+  const count = await locator.count();
+  for (let index = 0; index < count; index += 1) {
+    const item = locator.nth(index);
+    try {
+      if (await item.isVisible({ timeout: 500 })) {
+        await item.click({ timeout: 3000, ...options });
+        return true;
+      }
+    } catch {
+      // Keep trying alternate matches. Sites often render duplicate hidden controls.
+    }
+  }
+  return false;
+}
+
+async function selectAbcSizeOption(page, selectIndex, value) {
+  const boxes = page.locator('div[class*="sizeSelectWrap"] div[class*="selectBox"]');
+  await boxes.nth(selectIndex).click({ force: true, timeout: 5000 });
+  await page.waitForTimeout(400);
+
+  const exact = new RegExp(`^\\s*${escapeRegex(value)}\\s*$`);
+  const option = page.locator('div[class*="selectItem"]').filter({ hasText: exact }).first();
+  try {
+    await option.scrollIntoViewIfNeeded({ timeout: 1500 });
+    await option.click({ force: true, timeout: 3000 });
+  } catch {
+    const clicked = await page.evaluate((optionText) => {
+      const candidates = Array.from(document.querySelectorAll('div[class*="selectItem"]'));
+      const item = candidates.find((element) => element.textContent?.trim() === optionText);
+      if (!item) return false;
+      item.scrollIntoView({ block: "center" });
+      item.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+      return true;
+    }, String(value));
+    if (!clicked) throw new Error(`ABC타이어 ${value} 옵션을 찾지 못했습니다.`);
+  }
+  await page.waitForTimeout(500);
+}
+
+async function openAbcSearchPage(page, platform, _input, target) {
+  await page.goto(platform.homeUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
+  await page.waitForTimeout(1500);
+  await dismissPopups(page);
+
+  const opened = await clickFirstVisible(page, page.getByText("사이즈", { exact: true }), { force: true });
+  if (!opened) {
+    throw new Error("ABC타이어 사이즈 검색 탭을 열지 못했습니다.");
+  }
+  await page.waitForTimeout(800);
+
+  await selectAbcSizeOption(page, 0, String(target.spec.width));
+  await selectAbcSizeOption(page, 1, String(target.spec.aspectRatio));
+  await selectAbcSizeOption(page, 2, String(target.spec.rim));
+
+  const productButton = page.getByRole("button", { name: /제품 보러가기/ }).first();
+  await productButton.click({ force: true, timeout: 5000 });
+  await page.waitForLoadState("domcontentloaded", { timeout: 45000 }).catch(() => {});
+  await page.waitForTimeout(3500);
+  await dismissPopups(page);
+  return page.url();
+}
+
+async function openTstationSearchPage(page, platform, _input, target) {
+  await page.goto(platform.searchUrl("", _input, target), { waitUntil: "domcontentloaded", timeout: 45000 });
+  await page.waitForTimeout(1800);
+  await dismissPopups(page);
+
+  const compact = specCompact(target.spec);
+  await page.evaluate((value) => {
+    for (const selector of ["#tireSizeFr", "#tireSizeRe"]) {
+      const input = document.querySelector(selector);
+      if (input) {
+        input.value = value;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    }
+  }, compact);
+
+  await clickFirstVisible(page, page.locator("button.searchCarCall-newVersion"), { force: true });
+  await page.waitForTimeout(1200);
+
+  await page.evaluate((value) => {
+    const frontInput = document.querySelector("#tireSizeFrSearchInput");
+    if (frontInput) {
+      frontInput.value = value;
+      frontInput.dispatchEvent(new Event("input", { bubbles: true }));
+      frontInput.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+
+    const functionNames = [
+      "searchEngineCar",
+      "searchCarHeader",
+      "searchCarHeaderNewVersion",
+      "searchTireSize",
+      "searchTireList",
+      "getTireList"
+    ];
+    for (const name of functionNames) {
+      try {
+        if (typeof window[name] === "function") window[name]();
+      } catch {
+        // Best-effort only. The visible browser remains open when extraction fails.
+      }
+    }
+  }, compact);
+
+  await page.waitForLoadState("domcontentloaded", { timeout: 15000 }).catch(() => {});
+  await page.waitForTimeout(3000);
+  await dismissPopups(page);
+  return page.url();
 }
 
 async function dismissPopups(page) {
@@ -414,6 +536,257 @@ async function extractDanawaItems(page, input, target) {
   return { blocked: false, items };
 }
 
+async function extractAbcItems(page, input, target) {
+  const specText = specToString(target.spec);
+  const compact = specCompact(target.spec);
+  const rawItems = await page.evaluate(
+    ({ currentSpec, compactSpec }) => {
+      function textOf(node) {
+        return (node?.innerText || node?.textContent || "").replace(/\s+/g, " ").trim();
+      }
+
+      function numberFrom(value) {
+        const cleaned = String(value || "").replace(/[^\d]/g, "");
+        return cleaned ? Number(cleaned) : undefined;
+      }
+
+      function cleanName(value) {
+        return String(value || "")
+          .replace(/ABC타이어는.*?무료\s*장착/i, "")
+          .replace(/\s*(?:장바구니|바로구매|구매하기|상세보기).*$/i, "")
+          .replace(/\s+/g, " ")
+          .trim();
+      }
+
+      const bodyText = textOf(document.body);
+      if (/captcha|캡차|로봇|비정상|접근이 제한|access denied|403|보안문자/i.test(bodyText)) {
+        return { blocked: true, items: [] };
+      }
+
+      const pricePattern = /([0-9]{1,3}(?:,[0-9]{3})+)\s*원/g;
+      const hasPricePattern = /[0-9]{1,3}(?:,[0-9]{3})+\s*원/;
+      const nodes = Array.from(document.querySelectorAll("a, article, li, section, div"))
+        .map((node) => ({ node, text: textOf(node) }))
+        .filter(({ text }) => text.length >= 30 && text.length <= 1600)
+        .filter(({ text }) => hasPricePattern.test(text));
+
+      const candidates = [];
+      const seen = new Set();
+
+      for (const { node, text } of nodes) {
+        pricePattern.lastIndex = 0;
+        const prices = Array.from(text.matchAll(pricePattern))
+          .map((match) => numberFrom(match[1]))
+          .filter((price) => price && price >= 50000);
+        if (!prices.length) continue;
+
+        const compactText = text.replace(/[^\d]/g, "");
+        const specMatch =
+          text.includes(currentSpec) ||
+          compactText.includes(compactSpec) ||
+          bodyText.replace(/[^\d]/g, "").includes(compactSpec);
+        if (!specMatch) continue;
+
+        const link = node.querySelector?.("a[href]") || node.closest?.("a[href]");
+        const href = link ? new URL(link.getAttribute("href"), location.href).toString() : location.href;
+        const nameCandidate = Array.from(node.querySelectorAll?.("h1, h2, h3, strong, a, [class*=name], [class*=title], [class*=product], [class*=goods]") || [])
+          .map((candidate) => cleanName(textOf(candidate)))
+          .filter((candidate) => candidate.length >= 6)
+          .filter((candidate) => !/[0-9]{1,3}(?:,[0-9]{3})+\s*원|배송|장착|후기|리뷰/.test(candidate))
+          .sort((a, b) => b.length - a.length)[0];
+        const productName = cleanName(nameCandidate || text.slice(0, 120)).slice(0, 140);
+        const unitPrice = Math.min(...prices);
+        const key = `${productName}-${unitPrice}-${href}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+
+        candidates.push({
+          productName,
+          unitPrice,
+          spec: currentSpec,
+          shippingFee: /무료\s*배송/.test(text) || /무료\s*배송/.test(bodyText) ? 0 : undefined,
+          installationFee: /무료\s*장착/.test(text) || /무료\s*장착/.test(bodyText) ? 0 : undefined,
+          installIncluded: /무료\s*장착/.test(text) || /무료\s*장착/.test(bodyText) ? true : undefined,
+          availableDate: /품절|일시품절/.test(text) ? "품절" : "확인 필요",
+          productUrl: href,
+          rawText: text.slice(0, 500)
+        });
+        if (candidates.length >= 8) break;
+      }
+
+      return { blocked: false, items: candidates };
+    },
+    { currentSpec: specText, compactSpec: compact }
+  );
+
+  if (rawItems.blocked) {
+    return { blocked: true, items: [] };
+  }
+
+  const modelTokens = String(input.modelName || input.keyword || "")
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((token) => token.length >= 2);
+
+  const items = rawItems.items.slice(0, 5).map((item, index) => {
+    const text = [item.productName, item.rawText].filter(Boolean).join(" ").toLowerCase();
+    const brand = String(input.brand || "").toLowerCase();
+    const brandKo = brand === "michelin" ? "미쉐린" : brand;
+    const brandMatch = brand ? text.includes(brand) || text.includes(brandKo) : true;
+    const modelMatchCount = modelTokens.filter((token) => text.includes(token)).length;
+    const modelMatch = !modelTokens.length || modelMatchCount >= Math.min(2, modelTokens.length);
+    const confidence = brandMatch && modelMatch ? "high" : brandMatch || modelMatch ? "medium" : "low";
+
+    return normalizeItem({
+      id: `local-ABC타이어-${target.side}-${Date.now()}-${index}`,
+      platformName: "ABC타이어",
+      side: target.side,
+      sideLabel: target.label,
+      productName: cleanProductName(item.productName) || "ABC타이어 상품",
+      brand: input.brand,
+      modelName: input.modelName || input.keyword,
+      spec: item.spec || specText,
+      unitPrice: item.unitPrice,
+      quantity: target.quantity,
+      shippingFee: item.shippingFee || 0,
+      installationFee: item.installationFee || 0,
+      discount: 0,
+      installIncluded: item.installIncluded,
+      shopName: "ABC타이어",
+      shopAddress: input.region || "",
+      availableDate: item.availableDate || "확인 필요",
+      productUrl: item.productUrl,
+      collectedAt: new Date().toISOString(),
+      confidence,
+      memo: "ABC타이어 사이즈 검색 드로어에서 규격을 선택한 뒤 결과 화면의 가격 후보를 추출했습니다."
+    });
+  });
+
+  return { blocked: false, items };
+}
+
+async function extractTstationItems(page, input, target) {
+  const specText = specToString(target.spec);
+  const compact = specCompact(target.spec);
+  const rawItems = await page.evaluate(
+    ({ currentSpec, compactSpec }) => {
+      function textOf(node) {
+        return (node?.innerText || node?.textContent || "").replace(/\s+/g, " ").trim();
+      }
+
+      function numberFrom(value) {
+        const cleaned = String(value || "").replace(/[^\d]/g, "");
+        return cleaned ? Number(cleaned) : undefined;
+      }
+
+      const bodyText = textOf(document.body);
+      if (/captcha|캡차|로봇|비정상|접근이 제한|access denied|403|보안문자/i.test(bodyText)) {
+        return { blocked: true, items: [] };
+      }
+
+      const pricePattern = /([0-9]{1,3}(?:,[0-9]{3})+)\s*원/g;
+      const hasPricePattern = /[0-9]{1,3}(?:,[0-9]{3})+\s*원/;
+      const cards = Array.from(document.querySelectorAll(".tire-list-item, [class*=product], [class*=goods], article, li, a, section, div"))
+        .map((node) => ({ node, text: textOf(node) }))
+        .filter(({ text }) => text.length >= 30 && text.length <= 1800)
+        .filter(({ text }) => hasPricePattern.test(text));
+
+      const items = [];
+      const seen = new Set();
+
+      for (const { node, text } of cards) {
+        pricePattern.lastIndex = 0;
+        const prices = Array.from(text.matchAll(pricePattern))
+          .map((match) => numberFrom(match[1]))
+          .filter((price) => price && price >= 50000);
+        if (!prices.length) continue;
+
+        const compactText = text.replace(/[^\d]/g, "");
+        const specMatch =
+          text.includes(currentSpec) ||
+          compactText.includes(compactSpec) ||
+          document.querySelector("#tireSizeFr")?.value === compactSpec ||
+          document.querySelector("#tireSizeRe")?.value === compactSpec;
+        if (!specMatch) continue;
+
+        const link = node.querySelector?.("a[href]") || node.closest?.("a[href]");
+        const href = link ? new URL(link.getAttribute("href"), location.href).toString() : location.href;
+        const nameCandidates = Array.from(node.querySelectorAll?.("h1, h2, h3, strong, a, [class*=name], [class*=title], [class*=ptrn]") || [])
+          .map((candidate) => textOf(candidate))
+          .filter((candidate) => candidate.length >= 4)
+          .filter((candidate) => !/[0-9]{1,3}(?:,[0-9]{3})+\s*원|주유권|평점|리뷰|브랜드/.test(candidate))
+          .sort((a, b) => b.length - a.length);
+        const productName = (nameCandidates[0] || text.slice(0, 120)).replace(/\s+/g, " ").trim().slice(0, 140);
+        const unitPrice = Math.min(...prices);
+        const key = `${productName}-${unitPrice}-${href}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+
+        items.push({
+          productName,
+          unitPrice,
+          spec: currentSpec,
+          shippingFee: 0,
+          installationFee: /장착비\s*별도|장착\s*별도/.test(text) ? undefined : 0,
+          installIncluded: /장착비\s*별도|장착\s*별도/.test(text) ? false : undefined,
+          availableDate: /품절|일시품절/.test(text) ? "품절" : "확인 필요",
+          productUrl: href,
+          rawText: text.slice(0, 500)
+        });
+        if (items.length >= 8) break;
+      }
+
+      return { blocked: false, items };
+    },
+    { currentSpec: specText, compactSpec: compact }
+  );
+
+  if (rawItems.blocked) {
+    return { blocked: true, items: [] };
+  }
+
+  const modelTokens = String(input.modelName || input.keyword || "")
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((token) => token.length >= 2);
+
+  const items = rawItems.items.slice(0, 5).map((item, index) => {
+    const text = [item.productName, item.rawText].filter(Boolean).join(" ").toLowerCase();
+    const brand = String(input.brand || "").toLowerCase();
+    const brandKo = brand === "michelin" ? "미쉐린" : brand;
+    const brandMatch = brand ? text.includes(brand) || text.includes(brandKo) : true;
+    const modelMatchCount = modelTokens.filter((token) => text.includes(token)).length;
+    const modelMatch = !modelTokens.length || modelMatchCount >= Math.min(2, modelTokens.length);
+    const confidence = brandMatch && modelMatch ? "high" : brandMatch || modelMatch ? "medium" : "low";
+
+    return normalizeItem({
+      id: `local-티스테이션-${target.side}-${Date.now()}-${index}`,
+      platformName: "티스테이션",
+      side: target.side,
+      sideLabel: target.label,
+      productName: cleanProductName(item.productName) || "티스테이션 상품",
+      brand: input.brand,
+      modelName: input.modelName || input.keyword,
+      spec: item.spec || specText,
+      unitPrice: item.unitPrice,
+      quantity: target.quantity,
+      shippingFee: item.shippingFee || 0,
+      installationFee: item.installationFee || 0,
+      discount: 0,
+      installIncluded: item.installIncluded,
+      shopName: "티스테이션",
+      shopAddress: input.region || "",
+      availableDate: item.availableDate || "확인 필요",
+      productUrl: item.productUrl,
+      collectedAt: new Date().toISOString(),
+      confidence,
+      memo: "티스테이션 사이즈 검색 상태에서 가격이 노출된 경우 추출합니다. 가격 미노출 시 열린 브라우저에서 매장/차량 확인이 필요합니다."
+    });
+  }).filter((item) => item.confidence !== "low");
+
+  return { blocked: false, items };
+}
+
 async function extractVisibleItems(page, platformName, input, target) {
   if (platformName === "다나와") {
     return extractDanawaItems(page, input, target);
@@ -421,6 +794,14 @@ async function extractVisibleItems(page, platformName, input, target) {
 
   if (platformName === "타이어픽") {
     return extractTirepickItems(page, input, target);
+  }
+
+  if (platformName === "ABC타이어") {
+    return extractAbcItems(page, input, target);
+  }
+
+  if (platformName === "티스테이션") {
+    return extractTstationItems(page, input, target);
   }
 
   const rawItems = await page.evaluate(() => {
