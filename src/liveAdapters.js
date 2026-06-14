@@ -24,11 +24,6 @@ const platformDefinitions = [
     query: "search"
   },
   {
-    platformName: "타이어프로",
-    baseUrl: "https://www.tirepro.co.kr/product/list.html",
-    query: "keyword"
-  },
-  {
     platformName: "넥센 넥스트레벨",
     baseUrl: "https://www.nexen-nextlevel.com/product/prdList",
     query: "search"
@@ -45,7 +40,7 @@ const platformDefinitions = [
   },
   {
     platformName: "G마켓",
-    baseUrl: "https://browse.gmarket.co.kr/search",
+    baseUrl: "https://www.gmarket.co.kr/",
     query: "keyword"
   },
   {
@@ -61,10 +56,13 @@ const platformDefinitions = [
 ];
 
 function searchKeyword(input, spec) {
-  return [input.brand, input.modelName || input.keyword, specToString(spec), input.region].filter(Boolean).join(" ");
+  return [input.brand, input.modelName || input.keyword, specToString(spec)].filter(Boolean).join(" ");
 }
 
 function buildSearchUrl(platform, input, spec = input.frontSpec) {
+  if (platform.platformName === "G마켓") {
+    return platform.baseUrl;
+  }
   const url = new URL(platform.baseUrl);
   url.searchParams.set(platform.query, searchKeyword(input, spec));
   return url.toString();
@@ -696,113 +694,6 @@ async function fetchTstation(input) {
   };
 }
 
-function buildTireproApiUrl(spec) {
-  const url = new URL("https://tirepro-middleware.kumhotire.com/api/v1/tire");
-  url.searchParams.set("page", "1");
-  url.searchParams.set("limit", "20");
-  url.searchParams.set("orderBy", "best");
-  url.searchParams.set("categoryNo", "42");
-  url.searchParams.set("sectionWidth", spec.width);
-  url.searchParams.set("aspectRatio", spec.aspectRatio);
-  url.searchParams.set("inch", spec.rim);
-  return url.toString();
-}
-
-function parseTireproRows(rows, input, spec, quantity) {
-  return rows
-    .map((row) => {
-      const text = [row.productName, row.productEngName, row.standard, row.patternCode, row.simpleDescription].filter(Boolean).join(" ");
-      return { row, ...scoreTextCandidate(text, input, spec) };
-    })
-    .filter((item) => item.score > 0)
-    .sort((a, b) => {
-      if (b.score !== a.score) return b.score - a.score;
-      return Number(a.row.promotionPrice || a.row.price || 0) - Number(b.row.promotionPrice || b.row.price || 0);
-    })
-    .slice(0, 3)
-    .map(({ row, confidence }, index) => {
-      const unitPrice = numberFromPrice(row.promotionPrice || row.price || row.retailPrice);
-      if (!unitPrice) return null;
-      const description = String(row.simpleDescription || "");
-
-      return normalizeItem({
-        id: `tirepro-live-${row.productNo}-${index}`,
-        platformName: "타이어프로",
-        productName: row.productName || "타이어프로 상품",
-        brand: "금호",
-        modelName: row.patternCode || row.productName || input.modelName || input.keyword,
-        spec: row.standard || specToString(spec),
-        unitPrice,
-        quantity,
-        shippingFee: /무료배송/.test(description) ? 0 : 0,
-        installationFee: /무료장착/.test(description) ? 0 : 0,
-        discount: 0,
-        installIncluded: /무료장착/.test(description) || undefined,
-        shopName: "타이어프로",
-        shopAddress: input.region || "",
-        availableDate: row.soldOut ? "품절" : "구매 가능",
-        productUrl: row.productNo ? `https://www.tirepro.co.kr/product/detail.html?product_no=${row.productNo}` : "https://www.tirepro.co.kr/product/list.html?cate_no=42",
-        collectedAt: new Date().toISOString(),
-        confidence,
-        memo: `타이어프로 공개 API에서 추출한 후보 가격입니다.${description ? ` ${description}` : ""}`
-      });
-    })
-    .filter(Boolean);
-}
-
-async function fetchTirepro(input) {
-  const specs = specTargets(input);
-  const items = [];
-  const errors = [];
-  let searchUrl = "https://www.tirepro.co.kr/product/list.html?cate_no=42";
-
-  for (const target of specs) {
-    searchUrl = `https://www.tirepro.co.kr/product/list.html?cate_no=42&width=${target.spec.width}&aspect=${target.spec.aspectRatio}&inch=${target.spec.rim}`;
-    try {
-      const response = await fetchJson(buildTireproApiUrl(target.spec), {
-        headers: {
-          "origin": "https://www.tirepro.co.kr",
-          "referer": searchUrl
-        }
-      });
-      if (!response.ok) {
-        errors.push(`${target.label} 규격 HTTP ${response.status}`);
-        continue;
-      }
-      const rows = Array.isArray(response.json?.data?.items) ? response.json.data.items : [];
-      if (!rows.length) {
-        errors.push(`${target.label} 규격 가격 후보 없음`);
-        continue;
-      }
-      const parsed = parseTireproRows(rows, input, target.spec, target.quantity);
-      if (!parsed.length) {
-        errors.push(`${target.label} 규격 매칭 후보 없음`);
-      }
-      items.push(...parsed);
-    } catch (error) {
-      errors.push(`${target.label} 규격 ${error.name === "AbortError" ? "시간 초과" : error.message}`);
-    }
-  }
-
-  if (items.length) {
-    return {
-      platformName: "타이어프로",
-      searchUrl,
-      status: errors.length || items.every((item) => item.confidence === "low") ? "partial" : "success",
-      items,
-      errorMessage: errors.length ? errors.join(" / ") : undefined
-    };
-  }
-
-  return {
-    platformName: "타이어프로",
-    searchUrl,
-    status: "failed",
-    items: [],
-    errorMessage: errors.join(" / ") || "타이어프로 공개 API에서 가격 후보를 찾지 못했습니다."
-  };
-}
-
 function buildNexenBody(spec) {
   return {
     modelCd: "",
@@ -984,15 +875,14 @@ export async function fetchLivePrices(input) {
   results.push(await fetchTirepick(input));
   results.push(await fetchAbcTire(input));
   results.push(await fetchTstation(input));
-  results.push(await fetchTirepro(input));
   results.push(await fetchNexenNextlevel(input));
   results.push(await probeBlockedPlatform("네이버 쇼핑", input));
   results.push(await probeBlockedPlatform("11번가", input));
-  results.push(await probeBlockedPlatform("G마켓", input));
+  results.push(unsupportedResult(platformDefinitions.find((item) => item.platformName === "G마켓"), input, "봇 의심을 줄이기 위해 서버 요청은 하지 않습니다. 로컬 자동화에서 G마켓 접속 후 검색창 입력 방식으로 확인하세요."));
   results.push(await probeBlockedPlatform("옥션", input));
   results.push(await probeBlockedPlatform("쿠팡", input));
 
-  const handled = new Set(["다나와", "타이어픽", "ABC타이어", "티스테이션", "타이어프로", "넥센 넥스트레벨", "네이버 쇼핑", "11번가", "G마켓", "옥션", "쿠팡"]);
+  const handled = new Set(["다나와", "타이어픽", "ABC타이어", "티스테이션", "넥센 넥스트레벨", "네이버 쇼핑", "11번가", "G마켓", "옥션", "쿠팡"]);
   for (const platform of platformDefinitions) {
     if (handled.has(platform.platformName)) continue;
     results.push(unsupportedResult(platform, input));

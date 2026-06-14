@@ -4,6 +4,7 @@ import { chromium } from "playwright-core";
 import { normalizeItem, specToString } from "../src/price.js";
 
 const DEFAULT_KEEP_OPEN_MS = 10 * 60 * 1000;
+const INSTALL_INCLUDED_PATTERN = /전국\s*무료\s*장착|무료\s*장착|지정점\s*무료\s*장착|출장\s*무료\s*장착|장착비\s*포함|장착\s*포함|무료\s*교체/;
 
 const platforms = [
   {
@@ -28,12 +29,6 @@ const platforms = [
     searchUrl: () => "https://www.tstation.com/tire/sizes"
   },
   {
-    platformName: "타이어프로",
-    homeUrl: "https://www.tirepro.co.kr/",
-    searchUrl: (_query, _input, target) =>
-      `https://www.tirepro.co.kr/product/list.html?cate_no=42&width=${target.spec.width}&aspect=${target.spec.aspectRatio}&inch=${target.spec.rim}`
-  },
-  {
     platformName: "넥센 넥스트레벨",
     homeUrl: "https://www.nexen-nextlevel.com/",
     searchUrl: (_query) => "https://www.nexen-nextlevel.com/product/prdList?viewGbn=H"
@@ -51,7 +46,7 @@ const platforms = [
   {
     platformName: "G마켓",
     homeUrl: "https://www.gmarket.co.kr/",
-    searchUrl: (query) => `https://browse.gmarket.co.kr/search?keyword=${encodeURIComponent(query)}`
+    searchUrl: () => "https://www.gmarket.co.kr/"
   },
   {
     platformName: "옥션",
@@ -104,7 +99,7 @@ function specTargets(input) {
 }
 
 function queryFor(input, spec = input.frontSpec) {
-  return [input.brand, input.modelName || input.keyword, specToString(spec), input.region].filter(Boolean).join(" ");
+  return [input.brand, input.modelName || input.keyword, specToString(spec)].filter(Boolean).join(" ");
 }
 
 function cleanProductName(value) {
@@ -192,11 +187,16 @@ async function openSearchPage(page, platform, input, target) {
     return openTstationSearchPage(page, platform, input, target);
   }
 
+  if (platform.platformName === "G마켓") {
+    return openGmarketSearchPage(page, platform, input, target);
+  }
+
   const query = queryFor(input, target.spec);
   const targetUrl = platform.searchUrl(query, input, target);
   await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
   await page.waitForTimeout(2500);
   await dismissPopups(page);
+  await sortByLowestPrice(page);
   return targetUrl;
 }
 
@@ -266,6 +266,49 @@ async function openAbcSearchPage(page, platform, _input, target) {
   await page.waitForTimeout(3500);
   await dismissPopups(page);
   return page.url() || resultUrl;
+}
+
+async function openGmarketSearchPage(page, platform, input, target) {
+  const query = queryFor(input, target.spec);
+  await page.goto(platform.homeUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
+  await page.waitForTimeout(1800);
+  await dismissPopups(page);
+
+  const selectors = [
+    'input[name="keyword"]',
+    'input[name="search_keyword"]',
+    'input#keyword',
+    'input#search_keyword',
+    'input[type="search"]',
+    'input[placeholder*="검색"]'
+  ];
+  const searchInput = page.locator(selectors.join(", ")).first();
+  await searchInput.waitFor({ state: "visible", timeout: 10000 });
+  await searchInput.fill(query, { timeout: 5000 });
+  await page.keyboard.press("Enter");
+  await page.waitForLoadState("domcontentloaded", { timeout: 30000 }).catch(() => {});
+  await page.waitForTimeout(3000);
+  await dismissPopups(page);
+  await sortByLowestPrice(page);
+  return page.url();
+}
+
+async function sortByLowestPrice(page) {
+  const labels = ["낮은가격순", "낮은 가격순", "가격 낮은 순", "가격낮은순", "최저가순", "저가순"];
+  for (const label of labels) {
+    try {
+      const clicked = await clickFirstVisible(page, page.getByText(label, { exact: true }), { force: true });
+      if (clicked) {
+        await page.waitForLoadState("domcontentloaded", { timeout: 12000 }).catch(() => {});
+        await page.waitForTimeout(1500);
+        await dismissPopups(page);
+        return true;
+      }
+    } catch {
+      // Sorting controls vary by marketplace. Best-effort only.
+    }
+  }
+  return false;
 }
 
 async function openTstationSearchPage(page, platform, _input, target) {
@@ -497,10 +540,11 @@ async function extractTirepickItems(page, input, target) {
       shopName: "타이어픽",
       shopAddress: input.region || "",
       availableDate: item.availableDate || "확인 필요",
-      productUrl: item.productUrl,
-      collectedAt: new Date().toISOString(),
-      confidence,
-      memo: "타이어픽 규격 필터 화면에서 추출한 후보입니다. 검색어가 아니라 규격 URL로 앞/뒤를 각각 조회합니다."
+        productUrl: item.productUrl,
+        selectionText: item.rawText,
+        collectedAt: new Date().toISOString(),
+        confidence,
+        memo: "타이어픽 규격 필터 화면에서 추출한 후보입니다. 검색어가 아니라 규격 URL로 앞/뒤를 각각 조회합니다."
     });
   });
 
@@ -596,6 +640,7 @@ async function extractDanawaItems(page, input, target) {
       shopAddress: input.region || "",
       availableDate: item.availableDate || "확인 필요",
       productUrl: item.productUrl,
+      selectionText: item.rawText,
       collectedAt: new Date().toISOString(),
       confidence,
       memo: "다나와 검색 결과 텍스트에서 현재 규격과 가격을 함께 포함한 후보를 추출했습니다."
@@ -730,6 +775,7 @@ async function extractAbcItems(page, input, target) {
       shopAddress: input.region || "",
       availableDate: item.availableDate || "확인 필요",
       productUrl: item.productUrl,
+      selectionText: item.rawText,
       collectedAt: new Date().toISOString(),
       confidence,
       memo: "ABC타이어 사이즈 검색 드로어에서 규격을 선택한 뒤 결과 화면의 가격 후보를 추출했습니다."
@@ -860,6 +906,7 @@ async function extractTstationItems(page, input, target) {
       shopAddress: input.region || "",
       availableDate: item.availableDate || "확인 필요",
       productUrl: item.productUrl,
+      selectionText: item.rawText,
       collectedAt: new Date().toISOString(),
       confidence,
       memo: "티스테이션 사이즈 검색 상태에서 가격이 노출된 경우 추출합니다. 가격 미노출 시 열린 브라우저에서 매장/차량 확인이 필요합니다."
@@ -1021,6 +1068,7 @@ async function extractVisibleItems(page, platformName, input, target) {
       shopAddress: input.region || "",
       availableDate: item.availableDate || "확인 필요",
       productUrl: item.productUrl,
+      selectionText: item.rawText,
       collectedAt: new Date().toISOString(),
       confidence,
       memo: "로컬 Playwright 브라우저 화면에서 보이는 텍스트를 추출한 후보입니다. 상세 조건은 열린 브라우저에서 확인하세요."
@@ -1033,14 +1081,32 @@ async function extractVisibleItems(page, platformName, input, target) {
 function lowestByTotal(items) {
   const priced = items.filter((item) => Number(item.unitPrice) > 0);
   if (!priced.length) return null;
-  const candidates = priced.some((item) => item.availableDate !== "품절")
+  const inStockCandidates = priced.some((item) => item.availableDate !== "품절")
     ? priced.filter((item) => item.availableDate !== "품절")
     : priced;
+  const candidates = inStockCandidates.some(hasInstallIncludedSignal)
+    ? inStockCandidates.filter(hasInstallIncludedSignal)
+    : inStockCandidates;
   return candidates.reduce((lowest, item) => {
     const currentTotal = Number(item.unitPrice || 0) * Number(item.quantity || 0) + Number(item.shippingFee || 0) + Number(item.installationFee || 0);
     const lowestTotal = Number(lowest.unitPrice || 0) * Number(lowest.quantity || 0) + Number(lowest.shippingFee || 0) + Number(lowest.installationFee || 0);
     return currentTotal < lowestTotal ? item : lowest;
   }, candidates[0]);
+}
+
+function hasInstallIncludedSignal(item) {
+  if (item?.installIncluded === true) return true;
+  const text = [
+    item?.productName,
+    item?.shopName,
+    item?.availableDate,
+    item?.memo,
+    item?.selectionText,
+    item?.rawText
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return INSTALL_INCLUDED_PATTERN.test(text);
 }
 
 function combinedInstallIncluded(front, rear) {

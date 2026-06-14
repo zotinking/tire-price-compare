@@ -32,11 +32,6 @@ const platforms = [
     query: "search"
   },
   {
-    platformName: "타이어프로",
-    baseUrl: "https://www.tirepro.co.kr/product/list.html",
-    query: "keyword"
-  },
-  {
     platformName: "넥센 넥스트레벨",
     baseUrl: "https://www.nexen-nextlevel.com/product/prdList",
     query: "search"
@@ -53,7 +48,7 @@ const platforms = [
   },
   {
     platformName: "G마켓",
-    baseUrl: "https://browse.gmarket.co.kr/search",
+    baseUrl: "https://www.gmarket.co.kr/",
     query: "keyword"
   },
   {
@@ -69,12 +64,19 @@ const platforms = [
 ];
 
 function searchKeyword(input) {
-  return [input.brand, input.modelName || input.keyword, specToString(input.frontSpec), input.region]
+  return [input.brand, input.modelName || input.keyword, specToString(input.frontSpec)]
     .filter(Boolean)
     .join(" ");
 }
 
+function platformByName(platformName) {
+  return platforms.find((platform) => platform.platformName === platformName);
+}
+
 export function buildSearchUrl(platform, input) {
+  if (platform.platformName === "G마켓") {
+    return platform.baseUrl;
+  }
   const url = new URL(platform.baseUrl);
   url.searchParams.set(platform.query, searchKeyword(input));
   return url.toString();
@@ -179,11 +181,6 @@ function mockFor(platformName, input) {
         })
       ]
     },
-    "타이어프로": {
-      status: "unsupported",
-      items: [],
-      errorMessage: "MVP에서 검색 URL만 제공합니다."
-    },
     "넥센 넥스트레벨": {
       status: "unsupported",
       items: [],
@@ -202,7 +199,7 @@ function mockFor(platformName, input) {
           shopName: "제휴 장착점 선택",
           shopAddress: input.region || "지역 미지정",
           availableDate: "확인 필요",
-          productUrl: buildSearchUrl(platforms[6], input),
+          productUrl: buildSearchUrl(platformByName("네이버 쇼핑"), input),
           confidence: "medium",
           memo: "MVP 예시 가격입니다. 검색 결과에서 현재가와 장착비를 확인하세요."
         }),
@@ -217,7 +214,7 @@ function mockFor(platformName, input) {
           shopName: "제휴 장착점 선택",
           shopAddress: input.region || "지역 미지정",
           availableDate: "확인 필요",
-          productUrl: buildSearchUrl(platforms[6], input),
+          productUrl: buildSearchUrl(platformByName("네이버 쇼핑"), input),
           confidence: "medium",
           memo: "MVP 예시 가격입니다. 배송비와 장착비는 실제 링크 기준으로 보정하세요."
         })
@@ -242,7 +239,7 @@ function mockFor(platformName, input) {
           shopName: "판매자 지정 장착점",
           shopAddress: input.region || "지역 미지정",
           availableDate: "확인 필요",
-          productUrl: buildSearchUrl(platforms[8], input),
+          productUrl: buildSearchUrl(platformByName("G마켓"), input),
           confidence: "low",
           memo: "상품명 유사도 낮음. 확인 필요"
         })
