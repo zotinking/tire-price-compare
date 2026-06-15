@@ -32,11 +32,6 @@ const platforms = [
     query: "search"
   },
   {
-    platformName: "넥센 넥스트레벨",
-    baseUrl: "https://www.nexen-nextlevel.com/product/prdList",
-    query: "search"
-  },
-  {
     platformName: "네이버 쇼핑",
     baseUrl: "https://search.shopping.naver.com/search/all",
     query: "query"
@@ -58,7 +53,7 @@ const platforms = [
   },
   {
     platformName: "쿠팡",
-    baseUrl: "https://www.coupang.com/np/search",
+    baseUrl: "https://www.coupang.com/",
     query: "q"
   }
 ];
@@ -74,7 +69,7 @@ function platformByName(platformName) {
 }
 
 export function buildSearchUrl(platform, input) {
-  if (platform.platformName === "G마켓") {
+  if (platform.platformName === "G마켓" || platform.platformName === "쿠팡") {
     return platform.baseUrl;
   }
   const url = new URL(platform.baseUrl);
@@ -180,11 +175,6 @@ function mockFor(platformName, input) {
           memo: "MVP 예시 가격입니다. 장착비 포함 여부와 현재가를 확인하세요."
         })
       ]
-    },
-    "넥센 넥스트레벨": {
-      status: "unsupported",
-      items: [],
-      errorMessage: "브랜드 전용 플랫폼이라 Michelin 검색은 수동 확인이 적합합니다."
     },
     "네이버 쇼핑": {
       status: "partial",

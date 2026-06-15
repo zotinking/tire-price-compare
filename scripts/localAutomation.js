@@ -29,11 +29,6 @@ const platforms = [
     searchUrl: () => "https://www.tstation.com/tire/sizes"
   },
   {
-    platformName: "넥센 넥스트레벨",
-    homeUrl: "https://www.nexen-nextlevel.com/",
-    searchUrl: (_query) => "https://www.nexen-nextlevel.com/product/prdList?viewGbn=H"
-  },
-  {
     platformName: "네이버 쇼핑",
     homeUrl: "https://shopping.naver.com/home",
     searchUrl: (query) => `https://search.shopping.naver.com/search/all?query=${encodeURIComponent(query)}`
@@ -56,7 +51,7 @@ const platforms = [
   {
     platformName: "쿠팡",
     homeUrl: "https://www.coupang.com/",
-    searchUrl: (query) => `https://www.coupang.com/np/search?q=${encodeURIComponent(query)}`
+    searchUrl: () => "https://www.coupang.com/"
   }
 ];
 
@@ -100,6 +95,30 @@ function specTargets(input) {
 
 function queryFor(input, spec = input.frontSpec) {
   return [input.brand, input.modelName || input.keyword, specToString(spec)].filter(Boolean).join(" ");
+}
+
+function brandSearchTerms(brand) {
+  const normalized = String(brand || "").trim().toLowerCase();
+  const aliases = {
+    michelin: ["michelin", "미쉐린", "미쉐린타이어"],
+    "미쉐린": ["미쉐린", "michelin", "미쉐린타이어"],
+    "미쉐린타이어": ["미쉐린타이어", "미쉐린", "michelin"],
+    hankook: ["hankook", "한국", "한국타이어"],
+    "한국": ["한국", "한국타이어", "hankook"],
+    kumho: ["kumho", "금호", "금호타이어"],
+    "금호": ["금호", "금호타이어", "kumho"],
+    nexen: ["nexen", "넥센", "넥센타이어"],
+    "넥센": ["넥센", "넥센타이어", "nexen"],
+    pirelli: ["pirelli", "피렐리"],
+    "피렐리": ["피렐리", "pirelli"],
+    continental: ["continental", "콘티넨탈"],
+    "콘티넨탈": ["콘티넨탈", "continental"],
+    bridgestone: ["bridgestone", "브리지스톤"],
+    "브리지스톤": ["브리지스톤", "bridgestone"],
+    goodyear: ["goodyear", "굿이어"],
+    "굿이어": ["굿이어", "goodyear"]
+  };
+  return Array.from(new Set(aliases[normalized] || [normalized])).filter(Boolean);
 }
 
 function cleanProductName(value) {
@@ -187,8 +206,8 @@ async function openSearchPage(page, platform, input, target) {
     return openTstationSearchPage(page, platform, input, target);
   }
 
-  if (platform.platformName === "G마켓") {
-    return openGmarketSearchPage(page, platform, input, target);
+  if (platform.platformName === "G마켓" || platform.platformName === "쿠팡") {
+    return openHomeSearchPage(page, platform, input, target);
   }
 
   const query = queryFor(input, target.spec);
@@ -268,13 +287,16 @@ async function openAbcSearchPage(page, platform, _input, target) {
   return page.url() || resultUrl;
 }
 
-async function openGmarketSearchPage(page, platform, input, target) {
+async function openHomeSearchPage(page, platform, input, target) {
   const query = queryFor(input, target.spec);
   await page.goto(platform.homeUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
   await page.waitForTimeout(1800);
   await dismissPopups(page);
 
   const selectors = [
+    'input[name="q"]',
+    'input#headerSearchKeyword',
+    'input#searchInput',
     'input[name="keyword"]',
     'input[name="search_keyword"]',
     'input#keyword',
@@ -962,13 +984,93 @@ async function extractVisibleItems(page, platformName, input, target) {
       return node.parentElement || node;
     }
 
-    const bodyText = textOf(document.body);
-    if (blockedPattern.test(bodyText)) {
-      return { blocked: true, items: [] };
+    function candidateFromCard(card) {
+      const text = textOf(card);
+      if (text.length < 30 || text.length > 2200) return null;
+      const priceMatches = Array.from(text.matchAll(new RegExp(pricePattern.source, "g")))
+        .map((match) => numberFrom(match[1]))
+        .filter((price) => price && price >= 50000);
+      const price = priceMatches.length ? Math.min(...priceMatches) : undefined;
+      if (!price) return null;
+
+      const linkCandidates = Array.from(card.querySelectorAll("a[href]"))
+        .map((link) => ({
+          href: new URL(link.getAttribute("href"), location.href).toString(),
+          text: textOf(link)
+        }))
+        .filter((link) => link.text.length >= 8 || /item|goods|product|prod|deal|vendor/i.test(link.href));
+      const link = linkCandidates.find((candidate) => candidate.text.length >= 10) || linkCandidates[0];
+      const nameCandidates = Array.from(
+        card.querySelectorAll(
+          "a, h2, h3, strong, [title], [aria-label], [class*=name], [class*=title], [class*=goods], [class*=prod], [class*=item]"
+        )
+      )
+        .map((candidate) => {
+          const attrText = candidate.getAttribute?.("title") || candidate.getAttribute?.("aria-label") || "";
+          return (attrText || textOf(candidate)).replace(pricePattern, "").trim();
+        })
+        .filter((candidate) => candidate.length >= 8)
+        .filter((candidate) => !/무이자|카드|쿠폰|배송비|할인|혜택|렌탈|타이어\s*교체|바로가기|검색/.test(candidate))
+        .sort((a, b) => b.length - a.length);
+      const productName = (nameCandidates[0] || link?.text || text.slice(0, 140)).slice(0, 160);
+      if (!productName || productName.length < 8) return null;
+
+      const shippingFree = /무료배송|배송비\s*무료/.test(text);
+      const shippingFee = shippingFree ? 0 : numberFrom(text.match(/배송비\s*([0-9,]+)\s*원/)?.[1]);
+      const installIncluded = /전국\s*무료\s*장착|무료\s*장착|지정점\s*무료\s*장착|장착비\s*포함|전국장착|장착\s*포함/.test(text)
+        ? true
+        : /장착비\s*별도|장착\s*별도/.test(text)
+          ? false
+          : undefined;
+      const installationFee = installIncluded === true ? 0 : numberFrom(text.match(/장착비\s*([0-9,]+)\s*원/)?.[1]);
+      const availableDate = /품절|일시품절/.test(text) ? "품절" : /오늘|내일|예약|장착가능|구매가능|판매중/.test(text) ? "확인 가능" : "확인 필요";
+      const spec = text.match(/\d{3}\s*\/\s*\d{2}\s*(?:ZR|R)?\s*\d{2}/i)?.[0]?.replace(/\s+/g, "") || "";
+
+      return {
+        productName,
+        unitPrice: price,
+        shippingFee,
+        installationFee,
+        installIncluded,
+        availableDate,
+        productUrl: link?.href || location.href,
+        spec,
+        rawText: text.slice(0, 700)
+      };
     }
 
+    function addCandidate(card) {
+      const candidate = candidateFromCard(card);
+      if (!candidate) return;
+      const key = `${candidate.productName}-${candidate.unitPrice}-${candidate.productUrl}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      candidates.push(candidate);
+    }
+
+    const bodyText = textOf(document.body);
+    const pageBlocked = blockedPattern.test(bodyText);
     const candidates = [];
     const seen = new Set();
+
+    const cardSelectors = [
+      "li[class*=prod]",
+      "li[class*=product]",
+      "li[class*=item]",
+      "li[class*=search]",
+      "div[class*=prod]",
+      "div[class*=product]",
+      "div[class*=item]",
+      "div[class*=goods]",
+      "article",
+      "li"
+    ];
+    const cardNodes = Array.from(document.querySelectorAll(cardSelectors.join(", ")));
+    for (const card of cardNodes) {
+      addCandidate(card);
+      if (candidates.length >= 10) break;
+    }
+
     const textNodes = [];
     const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
     while (walker.nextNode()) {
@@ -979,48 +1081,11 @@ async function extractVisibleItems(page, platformName, input, target) {
 
     for (const priceNode of textNodes) {
       const card = bestAncestor(priceNode);
-      const text = textOf(card);
-      const price = numberFrom(text.match(pricePattern)?.[1]);
-      if (!price || price < 50000) continue;
-
-      const link = card.querySelector("a[href]");
-      const href = link ? new URL(link.getAttribute("href"), location.href).toString() : location.href;
-      const nameCandidates = Array.from(card.querySelectorAll("a, h2, h3, strong, [class*=name], [class*=title], [class*=goods], [class*=prod]"))
-        .map((candidate) => textOf(candidate).replace(pricePattern, "").trim())
-        .filter((candidate) => candidate.length >= 10)
-        .filter((candidate) => !/무이자|카드|쿠폰|배송비|할인|혜택|렌탈|타이어\s*교체/.test(candidate))
-        .sort((a, b) => b.length - a.length);
-      const productName = (nameCandidates[0] || text.slice(0, 120)).slice(0, 140);
-      const key = `${productName}-${price}-${href}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-
-      const shippingFree = /무료배송|배송비\s*무료/.test(text);
-      const shippingFee = shippingFree ? 0 : numberFrom(text.match(/배송비\s*([0-9,]+)\s*원/)?.[1]);
-      const installIncluded = /무료장착|장착비\s*포함|전국장착|장착\s*포함/.test(text)
-        ? true
-        : /장착비\s*별도|장착\s*별도/.test(text)
-          ? false
-          : undefined;
-      const installationFee = installIncluded === true ? 0 : numberFrom(text.match(/장착비\s*([0-9,]+)\s*원/)?.[1]);
-      const availableDate = /품절|일시품절/.test(text) ? "품절" : /오늘|내일|예약|장착가능/.test(text) ? "확인 가능" : "확인 필요";
-      const spec = text.match(/\d{3}\s*\/\s*\d{2}\s*(?:ZR|R)?\s*\d{2}/i)?.[0]?.replace(/\s+/g, "") || "";
-
-      candidates.push({
-        productName,
-        unitPrice: price,
-        shippingFee,
-        installationFee,
-        installIncluded,
-        availableDate,
-        productUrl: href,
-        spec,
-        rawText: text.slice(0, 500)
-      });
+      addCandidate(card);
       if (candidates.length >= 8) break;
     }
 
-    return { blocked: false, items: candidates };
+    return { blocked: pageBlocked && !candidates.length, items: candidates };
   });
 
   if (rawItems.blocked) {
@@ -1030,7 +1095,7 @@ async function extractVisibleItems(page, platformName, input, target) {
   const specText = specToString(target.spec);
   const items = rawItems.items.slice(0, 5).map((item, index) => {
     const text = [item.productName, item.spec, item.rawText].filter(Boolean).join(" ").toLowerCase();
-    const brand = String(input.brand || "").toLowerCase();
+    const brandTerms = brandSearchTerms(input.brand);
     const modelTokens = String(input.modelName || input.keyword || "")
       .toLowerCase()
       .split(/\s+/)
@@ -1038,7 +1103,7 @@ async function extractVisibleItems(page, platformName, input, target) {
     const specMatch =
       text.includes(specText.toLowerCase()) ||
       text.replace(/[^\d]/g, "").includes(specCompact(target.spec));
-    const brandMatch = brand ? text.includes(brand) : true;
+    const brandMatch = brandTerms.length ? brandTerms.some((term) => text.includes(term.toLowerCase())) : true;
     const modelMatchCount = modelTokens.filter((token) => text.includes(token)).length;
     const modelMatch = !modelTokens.length || modelMatchCount >= Math.min(2, modelTokens.length);
     const confidence = specMatch && brandMatch && modelMatch ? "high" : specMatch || modelMatch ? "medium" : "low";

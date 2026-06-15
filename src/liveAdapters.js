@@ -24,11 +24,6 @@ const platformDefinitions = [
     query: "search"
   },
   {
-    platformName: "넥센 넥스트레벨",
-    baseUrl: "https://www.nexen-nextlevel.com/product/prdList",
-    query: "search"
-  },
-  {
     platformName: "네이버 쇼핑",
     baseUrl: "https://search.shopping.naver.com/search/all",
     query: "query"
@@ -50,7 +45,7 @@ const platformDefinitions = [
   },
   {
     platformName: "쿠팡",
-    baseUrl: "https://www.coupang.com/np/search",
+    baseUrl: "https://www.coupang.com/",
     query: "q"
   }
 ];
@@ -60,7 +55,7 @@ function searchKeyword(input, spec) {
 }
 
 function buildSearchUrl(platform, input, spec = input.frontSpec) {
-  if (platform.platformName === "G마켓") {
+  if (platform.platformName === "G마켓" || platform.platformName === "쿠팡") {
     return platform.baseUrl;
   }
   const url = new URL(platform.baseUrl);
@@ -694,137 +689,6 @@ async function fetchTstation(input) {
   };
 }
 
-function buildNexenBody(spec) {
-  return {
-    modelCd: "",
-    contentsCd: "",
-    classCd: "",
-    sectionWidth: String(spec.width),
-    aspectRatio: String(spec.aspectRatio),
-    wheelInches: String(spec.rim),
-    sectionRwWidth: "",
-    aspectRwRatio: "",
-    wheelRwInches: "",
-    tireSizeYn: "",
-    fCarType: ["P1", "S1", "V1"],
-    fBrand: ["NXN"],
-    fSeason: ["03", "01", "02"],
-    fRentalYn: ["B", "R"],
-    pageNo: "1",
-    pageSize: "6",
-    orderType: "pop",
-    searchType: "X",
-    lifeStyle: null,
-    orderSpec: "",
-    buyMinFee: 0,
-    buyMaxFee: 400000,
-    rentMinFee: 0,
-    rentMaxFee: 400000
-  };
-}
-
-function parseNexenRows(rows, input, spec, quantity) {
-  return rows
-    .map((row) => {
-      const text = [row.matNm, row.petternCdNm, row.listTireSize, row.seasonCdNm, row.classCdNm].filter(Boolean).join(" ");
-      return { row, ...scoreTextCandidate(text, input, spec) };
-    })
-    .filter((item) => item.score > 0)
-    .sort((a, b) => {
-      if (b.score !== a.score) return b.score - a.score;
-      return Number(a.row.saleFee || a.row.minSaleFee || 0) - Number(b.row.saleFee || b.row.minSaleFee || 0);
-    })
-    .slice(0, 3)
-    .map(({ row, confidence }, index) => {
-      const unitPrice = numberFromPrice(row.saleFee || row.minSaleFee || row.otFee || row.bassSaleFee);
-      if (!unitPrice) return null;
-      const monthly = row.otPay ? ` 월 렌탈료 ${Number(row.otPay).toLocaleString("ko-KR")}원 정보가 함께 제공됩니다.` : "";
-
-      return normalizeItem({
-        id: `nexen-live-${row.dpPrNo || row.matCd || index}`,
-        platformName: "넥센 넥스트레벨",
-        productName: row.matNm || row.petternCdNm || "넥센 넥스트레벨 상품",
-        brand: "넥센",
-        modelName: row.petternCdNm || row.matNm || input.modelName || input.keyword,
-        spec: row.listTireSize || specToString(spec),
-        unitPrice,
-        quantity,
-        shippingFee: 0,
-        installationFee: 0,
-        discount: 0,
-        installIncluded: undefined,
-        shopName: "넥센 넥스트레벨",
-        shopAddress: input.region || "",
-        availableDate: "확인 필요",
-        productUrl: "https://www.nexen-nextlevel.com/product/prdList?viewGbn=H",
-        collectedAt: new Date().toISOString(),
-        confidence,
-        memo: `넥센 넥스트레벨 공개 API에서 추출한 넥센 브랜드 후보입니다.${monthly}`
-      });
-    })
-    .filter(Boolean);
-}
-
-async function fetchNexenNextlevel(input) {
-  const specs = specTargets(input);
-  const items = [];
-  const errors = [];
-  let searchUrl = "https://www.nexen-nextlevel.com/product/prdList?viewGbn=H";
-
-  for (const target of specs) {
-    try {
-      const response = await fetchJson("https://www.nexen-nextlevel.com/product/selectPrdList", {
-        method: "POST",
-        body: JSON.stringify(buildNexenBody(target.spec)),
-        headers: {
-          "content-type": "application/json; charset=UTF-8",
-          "origin": "https://www.nexen-nextlevel.com",
-          "referer": searchUrl,
-          "x-requested-with": "XMLHttpRequest"
-        }
-      });
-      if (!response.ok) {
-        errors.push(`${target.label} 규격 HTTP ${response.status}`);
-        continue;
-      }
-      const rows = Array.isArray(response.json?.selectPrdList) ? response.json.selectPrdList : [];
-      if (!rows.length) {
-        errors.push(`${target.label} 규격 가격 후보 없음`);
-        continue;
-      }
-      const parsed = parseNexenRows(rows, input, target.spec, target.quantity);
-      if (!parsed.length) {
-        errors.push(`${target.label} 규격 매칭 후보 없음`);
-      }
-      items.push(...parsed);
-    } catch (error) {
-      errors.push(`${target.label} 규격 ${error.name === "AbortError" ? "시간 초과" : error.message}`);
-    }
-  }
-
-  if (items.length) {
-    return {
-      platformName: "넥센 넥스트레벨",
-      searchUrl,
-      status: errors.length || items.every((item) => item.confidence === "low") ? "partial" : "success",
-      items,
-      errorMessage: errors.length
-        ? errors.join(" / ")
-        : items.every((item) => item.confidence === "low")
-          ? "브랜드 전용몰이라 입력 브랜드와 다른 넥센 후보일 수 있습니다."
-          : undefined
-    };
-  }
-
-  return {
-    platformName: "넥센 넥스트레벨",
-    searchUrl,
-    status: "failed",
-    items: [],
-    errorMessage: errors.join(" / ") || "넥센 넥스트레벨 공개 API에서 가격 후보를 찾지 못했습니다."
-  };
-}
-
 async function probeBlockedPlatform(platformName, input) {
   const platform = platformDefinitions.find((item) => item.platformName === platformName);
   const searchUrl = buildSearchUrl(platform, input);
@@ -875,14 +739,13 @@ export async function fetchLivePrices(input) {
   results.push(await fetchTirepick(input));
   results.push(await fetchAbcTire(input));
   results.push(await fetchTstation(input));
-  results.push(await fetchNexenNextlevel(input));
   results.push(await probeBlockedPlatform("네이버 쇼핑", input));
   results.push(await probeBlockedPlatform("11번가", input));
   results.push(unsupportedResult(platformDefinitions.find((item) => item.platformName === "G마켓"), input, "봇 의심을 줄이기 위해 서버 요청은 하지 않습니다. 로컬 자동화에서 G마켓 접속 후 검색창 입력 방식으로 확인하세요."));
   results.push(await probeBlockedPlatform("옥션", input));
-  results.push(await probeBlockedPlatform("쿠팡", input));
+  results.push(unsupportedResult(platformDefinitions.find((item) => item.platformName === "쿠팡"), input, "직접 검색 URL 접속이 차단될 수 있어 서버 요청은 하지 않습니다. 로컬 자동화에서 쿠팡 접속 후 검색창 입력 방식으로 확인하세요."));
 
-  const handled = new Set(["다나와", "타이어픽", "ABC타이어", "티스테이션", "넥센 넥스트레벨", "네이버 쇼핑", "11번가", "G마켓", "옥션", "쿠팡"]);
+  const handled = new Set(["다나와", "타이어픽", "ABC타이어", "티스테이션", "네이버 쇼핑", "11번가", "G마켓", "옥션", "쿠팡"]);
   for (const platform of platformDefinitions) {
     if (handled.has(platform.platformName)) continue;
     results.push(unsupportedResult(platform, input));
