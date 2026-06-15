@@ -1,5 +1,6 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { chromium } from "playwright-core";
 import { normalizeItem, specToString } from "../src/price.js";
 
@@ -123,6 +124,10 @@ function searchBrandFor(brand) {
   return terms.find((term) => /[가-힣]/.test(term)) || String(brand || "").trim();
 }
 
+function productLabel(input) {
+  return input?.label || [input?.brand, input?.modelName || input?.keyword].filter(Boolean).join(" ") || "제품";
+}
+
 function cleanProductName(value) {
   return String(value || "")
     .replace(/\s*(등록\s*관심상품|관심상품|상품분류|리뷰|상품의견).*$/i, "")
@@ -179,24 +184,56 @@ async function launchContext() {
     args: ["--disable-blink-features=AutomationControlled"]
   };
 
-  try {
-    const context = await chromium.launchPersistentContext(userDataDir, {
-      ...baseOptions,
-      channel
-    });
-    return { context, channel, userDataDir };
-  } catch (edgeError) {
-    const fallbackChannel = channel === "chrome" ? "msedge" : "chrome";
+  const channels = [channel, channel === "chrome" ? "msedge" : "chrome"];
+  const errors = [];
+
+  for (const candidateChannel of channels) {
     try {
       const context = await chromium.launchPersistentContext(userDataDir, {
         ...baseOptions,
-        channel: fallbackChannel
+        channel: candidateChannel
       });
-      return { context, channel: fallbackChannel, userDataDir };
-    } catch {
-      throw edgeError;
+      return { context, channel: candidateChannel, userDataDir, temporaryProfile: false };
+    } catch (error) {
+      errors.push(`${candidateChannel}: ${briefBrowserLaunchError(error)}`);
     }
   }
+
+  const temporaryUserDataDir = await mkdtemp(join(tmpdir(), "tire-browser-profile-"));
+  for (const candidateChannel of channels) {
+    try {
+      const context = await chromium.launchPersistentContext(temporaryUserDataDir, {
+        ...baseOptions,
+        channel: candidateChannel
+      });
+      return { context, channel: candidateChannel, userDataDir: temporaryUserDataDir, temporaryProfile: true };
+    } catch (error) {
+      errors.push(`${candidateChannel} 임시 프로필: ${briefBrowserLaunchError(error)}`);
+    }
+  }
+
+  throw new Error(`Chrome/Edge 실행에 실패했습니다. ${errors.join(" / ")}`);
+}
+
+function briefBrowserLaunchError(error) {
+  const message = String(error?.message || error || "")
+    .replace(/\x1b\[[0-9;]*m/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (/Singleton|already in use|ProcessSingleton|user data directory|프로필|사용 중|잠금|lock/i.test(message)) {
+    return "브라우저 프로필이 이미 사용 중이거나 잠겨 있습니다";
+  }
+
+  if (/executable doesn't exist|not found|ENOENT|설치/i.test(message)) {
+    return "브라우저 실행 파일을 찾지 못했습니다";
+  }
+
+  if (/Target page, context or browser has been closed/i.test(message)) {
+    return "브라우저가 시작 직후 종료되었습니다";
+  }
+
+  return message.slice(0, 240) || "알 수 없는 실행 오류";
 }
 
 async function openSearchPage(page, platform, input, target) {
@@ -1595,7 +1632,9 @@ async function collectPlatform(context, platform, input, jobPath, outputPath) {
 
 async function main() {
   const { inputPath, outputPath, jobPath } = parseArgs();
-  const input = JSON.parse(await readFile(inputPath, "utf8"));
+  const automationInput = JSON.parse(await readFile(inputPath, "utf8"));
+  const products = Array.isArray(automationInput.products) && automationInput.products.length ? automationInput.products : [automationInput];
+  const excludedPlatforms = Array.isArray(automationInput.excludedPlatforms) ? automationInput.excludedPlatforms : [];
 
   await writeJob(jobPath, {
     status: "running",
@@ -1606,7 +1645,9 @@ async function main() {
   let context;
   let channel = "";
   let userDataDir = "";
+  let temporaryProfile = false;
   const results = [];
+  const resultsByProduct = {};
   let hasManualPages = false;
 
   try {
@@ -1614,27 +1655,49 @@ async function main() {
     context = launched.context;
     channel = launched.channel;
     userDataDir = launched.userDataDir;
+    temporaryProfile = launched.temporaryProfile;
 
-    const targetPlatforms = selectedPlatforms(input);
-    for (const platform of targetPlatforms) {
-      await writeJob(jobPath, {
-        status: "running",
-        message: `${platform.platformName} 수집 중`,
-        outputPath,
-        partialResults: results
-      });
-      const { result, keepOpen } = await collectPlatform(context, platform, input, jobPath, outputPath);
-      results.push(result);
-      hasManualPages = hasManualPages || keepOpen;
+    await writeJob(jobPath, {
+      status: "running",
+      message: temporaryProfile
+        ? "기본 브라우저 프로필이 잠겨 임시 프로필로 실행했습니다. 로그인 세션은 공유되지 않을 수 있습니다."
+        : `${channel === "msedge" ? "Edge" : "Chrome"} 브라우저 실행 완료`,
+      outputPath
+    });
+
+    for (let productIndex = 0; productIndex < products.length; productIndex += 1) {
+      const product = {
+        ...products[productIndex],
+        excludedPlatforms
+      };
+      const productKey = product.id || `product-${productIndex + 1}`;
+      resultsByProduct[productKey] = [];
+
+      const targetPlatforms = selectedPlatforms(product);
+      for (const platform of targetPlatforms) {
+        await writeJob(jobPath, {
+          status: "running",
+          message: `${productIndex + 1}/${products.length} ${productLabel(product)} · ${platform.platformName} 수집 중`,
+          outputPath,
+          partialResults: results
+        });
+        const { result, keepOpen } = await collectPlatform(context, platform, product, jobPath, outputPath);
+        results.push(result);
+        resultsByProduct[productKey].push(result);
+        hasManualPages = hasManualPages || keepOpen;
+      }
     }
 
     const payload = {
       collectedAt: new Date().toISOString(),
       mode: "local-playwright",
-      input,
+      input: products[0],
+      products,
+      resultsByProduct,
       browser: {
         channel,
         userDataDir,
+        temporaryProfile,
         keepOpenOnFailureMs: hasManualPages ? Number(process.env.TIRE_KEEP_BROWSER_OPEN_MS || DEFAULT_KEEP_OPEN_MS) : 0
       },
       results

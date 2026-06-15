@@ -1097,27 +1097,19 @@ function startLocalAutomationSearch() {
   render();
 
   const excludedPlatforms = [...state.excludedPlatforms];
-  const collected = [];
-
-  (async () => {
-    for (let index = 0; index < products.length; index += 1) {
-      const product = products[index];
-      state.notice = `${index + 1}/${products.length} ${productLabel(product)} 로컬 자동화 실행 중`;
-      render();
-      const payload = await runLocalAutomation(product, { excludedPlatforms }, (status) => {
-        state.notice = `${index + 1}/${products.length} ${productLabel(product)} · ${status.message || "진행 중"}`;
-        render();
-      });
-      collected.push({ product, results: payload.results || [] });
-      state.results = mergeProductResults(collected);
-      persist();
-      render();
-    }
-  })()
-    .then(() => {
-      state.notice = excludedPlatforms.length
+  runLocalAutomation({ products }, { excludedPlatforms }, (status) => {
+    state.notice = status.message || "로컬 브라우저 자동화가 진행 중입니다.";
+    render();
+  })
+    .then((payload) => {
+      applyLoadedPayload(payload);
+      const profileNotice = payload.browser?.temporaryProfile
+        ? " 기본 브라우저 프로필이 잠겨 임시 프로필로 실행되어 로그인 세션은 공유되지 않았을 수 있습니다."
+        : "";
+      const doneNotice = excludedPlatforms.length
         ? `전체 제품 자동화가 완료되었습니다. 비교 제외 플랫폼 ${excludedPlatforms.length}개는 건너뛰었습니다.`
         : "전체 제품 자동화가 완료되었습니다. 제품별 최저가를 비교표에서 확인하세요.";
+      state.notice = `${doneNotice}${profileNotice}`;
       persist();
       render();
     })
