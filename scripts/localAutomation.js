@@ -5,6 +5,8 @@ import { normalizeItem, specToString } from "../src/price.js";
 
 const DEFAULT_KEEP_OPEN_MS = 10 * 60 * 1000;
 const INSTALL_INCLUDED_PATTERN = /전국\s*무료\s*장착|무료\s*장착|지정점\s*무료\s*장착|출장\s*무료\s*장착|장착비\s*포함|장착\s*포함|무료\s*교체/;
+const BLOCKED_TEXT_PATTERN = /captcha|캡차|로봇|봇\s*(?:확인|검증|\(bot\))?|비정상|접근이 제한|접속이 제한|요청이 차단|서비스 이용이 제한|access denied|403|보안문자|잠시만 기다리|원활한 서비스 이용/i;
+const DEFAULT_MANUAL_UNBLOCK_WAIT_MS = 2 * 60 * 1000;
 
 const platforms = [
   {
@@ -94,7 +96,7 @@ function specTargets(input) {
 }
 
 function queryFor(input, spec = input.frontSpec) {
-  return [input.brand, input.modelName || input.keyword, specToString(spec)].filter(Boolean).join(" ");
+  return [searchBrandFor(input.brand), input.modelName || input.keyword, specToString(spec)].filter(Boolean).join(" ");
 }
 
 function brandSearchTerms(brand) {
@@ -119,6 +121,11 @@ function brandSearchTerms(brand) {
     "굿이어": ["굿이어", "goodyear"]
   };
   return Array.from(new Set(aliases[normalized] || [normalized])).filter(Boolean);
+}
+
+function searchBrandFor(brand) {
+  const terms = brandSearchTerms(brand);
+  return terms.find((term) => /[가-힣]/.test(term)) || String(brand || "").trim();
 }
 
 function cleanProductName(value) {
@@ -316,10 +323,12 @@ async function openHomeSearchPage(page, platform, input, target) {
 }
 
 async function sortByLowestPrice(page) {
-  const labels = ["낮은가격순", "낮은 가격순", "가격 낮은 순", "가격낮은순", "최저가순", "저가순"];
+  const labels = ["낮은가격순", "낮은 가격순", "낮은 가격", "가격 낮은 순", "가격낮은순", "최저가순", "저가순"];
   for (const label of labels) {
     try {
-      const clicked = await clickFirstVisible(page, page.getByText(label, { exact: true }), { force: true });
+      const clicked =
+        (await clickFirstVisible(page, page.getByText(label, { exact: true }), { force: true })) ||
+        (await clickFirstVisible(page, page.getByText(label, { exact: false }), { force: true }));
       if (clicked) {
         await page.waitForLoadState("domcontentloaded", { timeout: 12000 }).catch(() => {});
         await page.waitForTimeout(1500);
@@ -329,6 +338,42 @@ async function sortByLowestPrice(page) {
     } catch {
       // Sorting controls vary by marketplace. Best-effort only.
     }
+  }
+
+  try {
+    const clicked = await page.evaluate(() => {
+      const terms = ["낮은가격순", "낮은 가격순", "낮은 가격", "가격 낮은 순", "가격낮은순", "최저가순", "저가순"];
+      const textOf = (node) => (node?.innerText || node?.textContent || "").replace(/\s+/g, " ").trim();
+      const controls = Array.from(document.querySelectorAll("a, button, li, span, div, option"));
+      const candidate = controls.find((element) => {
+        const text = textOf(element);
+        if (!terms.some((term) => text.includes(term))) return false;
+        const rect = element.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      });
+      if (!candidate) return false;
+
+      if (candidate.tagName === "OPTION") {
+        const select = candidate.closest("select");
+        if (!select) return false;
+        select.value = candidate.value;
+        select.dispatchEvent(new Event("input", { bubbles: true }));
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+        return true;
+      }
+
+      candidate.scrollIntoView({ block: "center", inline: "center" });
+      candidate.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+      return true;
+    });
+    if (clicked) {
+      await page.waitForLoadState("domcontentloaded", { timeout: 12000 }).catch(() => {});
+      await page.waitForTimeout(1800);
+      await dismissPopups(page);
+      return true;
+    }
+  } catch {
+    // Fall through to URL-based attempts.
   }
   return false;
 }
@@ -478,6 +523,18 @@ async function extractTirepickItems(page, input, target) {
     function numberFrom(value) {
       const cleaned = String(value || "").replace(/[^\d]/g, "");
       return cleaned ? Number(cleaned) : undefined;
+    }
+
+    function priceCandidatesFrom(text) {
+      return Array.from(text.matchAll(new RegExp(pricePattern.source, "g")))
+        .map((match) => {
+          const price = numberFrom(match[1]);
+          const index = match.index || 0;
+          const context = text.slice(Math.max(0, index - 28), index + match[0].length + 28);
+          const noise = /적립|포인트|쿠폰|할인|카드|배송비|무이자|최대|혜택|캐시|할부/.test(context);
+          return { price, noise };
+        })
+        .filter((item) => item.price && item.price >= 50000);
     }
 
     function cleanName(value) {
@@ -960,9 +1017,13 @@ async function extractVisibleItems(page, platformName, input, target) {
     return extractTstationItems(page, input, target);
   }
 
-  const rawItems = await page.evaluate(() => {
+  const rawItems = await page.evaluate(({ currentSpec }) => {
     const pricePattern = /(?:판매가|혜택가|최저가|가격)?\s*([0-9]{1,3}(?:,[0-9]{3})+)\s*원/;
-    const blockedPattern = /captcha|캡차|로봇|비정상|접근이 제한|access denied|403|보안문자/i;
+    const blockedPattern = /captcha|캡차|로봇|봇\s*(?:확인|검증|\(bot\))?|비정상|접근이 제한|접속이 제한|요청이 차단|서비스 이용이 제한|access denied|403|보안문자|잠시만 기다리|원활한 서비스 이용/i;
+
+    if (!document.body) {
+      return { blocked: false, items: [] };
+    }
 
     function textOf(node) {
       return (node?.innerText || node?.textContent || "").replace(/\s+/g, " ").trim();
@@ -971,6 +1032,18 @@ async function extractVisibleItems(page, platformName, input, target) {
     function numberFrom(value) {
       const cleaned = String(value || "").replace(/[^\d]/g, "");
       return cleaned ? Number(cleaned) : undefined;
+    }
+
+    function priceCandidatesFrom(text) {
+      return Array.from(text.matchAll(new RegExp(pricePattern.source, "g")))
+        .map((match) => {
+          const price = numberFrom(match[1]);
+          const index = match.index || 0;
+          const context = text.slice(Math.max(0, index - 28), index + match[0].length + 28);
+          const noise = /적립|포인트|쿠폰|할인|카드|배송비|무이자|최대|혜택|캐시|할부/.test(context);
+          return { price, noise, index };
+        })
+        .filter((item) => item.price && item.price >= 50000);
     }
 
     function bestAncestor(node) {
@@ -984,20 +1057,39 @@ async function extractVisibleItems(page, platformName, input, target) {
       return node.parentElement || node;
     }
 
-    function candidateFromCard(card) {
+    function candidateFromCard(card, preferredLink = null) {
       const text = textOf(card);
       if (text.length < 30 || text.length > 2200) return null;
-      const priceMatches = Array.from(text.matchAll(new RegExp(pricePattern.source, "g")))
-        .map((match) => numberFrom(match[1]))
-        .filter((price) => price && price >= 50000);
-      const price = priceMatches.length ? Math.min(...priceMatches) : undefined;
+      const priceMatches = priceCandidatesFrom(text);
+      const escapedSpec = currentSpec.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const unitPriceNearSpec = numberFrom(text.match(new RegExp(`${escapedSpec}[\\s\\S]{0,260}?([0-9]{1,3}(?:,[0-9]{3})+)\\s*원\\s*\\(1개당`, "i"))?.[1]);
+      const specIndex = text.toLowerCase().indexOf(currentSpec.toLowerCase());
+      const nearbyPrices =
+        specIndex >= 0
+          ? priceMatches
+              .filter((item) => !item.noise && item.index >= specIndex && item.index <= specIndex + 420)
+              .map((item) => item.price)
+          : [];
+      const cleanPrices = priceMatches.filter((item) => !item.noise).map((item) => item.price);
+      const fallbackPrices = priceMatches.map((item) => item.price);
+      const price = unitPriceNearSpec || nearbyPrices[0] || cleanPrices[0] || (fallbackPrices.length ? Math.max(...fallbackPrices) : undefined);
       if (!price) return null;
 
-      const linkCandidates = Array.from(card.querySelectorAll("a[href]"))
-        .map((link) => ({
+      const preferred = preferredLink
+        ? {
+            href: new URL(preferredLink.getAttribute("href"), location.href).toString(),
+            text: textOf(preferredLink)
+          }
+        : null;
+      const linkCandidates = [
+        preferred,
+        ...Array.from(card.querySelectorAll("a[href]")).map((link) => ({
           href: new URL(link.getAttribute("href"), location.href).toString(),
           text: textOf(link)
         }))
+      ]
+        .filter(Boolean)
+        .filter((link, index, list) => list.findIndex((item) => item.href === link.href && item.text === link.text) === index)
         .filter((link) => link.text.length >= 8 || /item|goods|product|prod|deal|vendor/i.test(link.href));
       const link = linkCandidates.find((candidate) => candidate.text.length >= 10) || linkCandidates[0];
       const nameCandidates = Array.from(
@@ -1039,8 +1131,8 @@ async function extractVisibleItems(page, platformName, input, target) {
       };
     }
 
-    function addCandidate(card) {
-      const candidate = candidateFromCard(card);
+    function addCandidate(card, preferredLink = null) {
+      const candidate = candidateFromCard(card, preferredLink);
       if (!candidate) return;
       const key = `${candidate.productName}-${candidate.unitPrice}-${candidate.productUrl}`;
       if (seen.has(key)) return;
@@ -1053,7 +1145,37 @@ async function extractVisibleItems(page, platformName, input, target) {
     const candidates = [];
     const seen = new Set();
 
+    const productLinks = Array.from(
+      document.querySelectorAll(
+        [
+          'a[href*="item.gmarket.co.kr"]',
+          'a[href*="itempage3.auction.co.kr"]',
+          'a[href*="www.11st.co.kr/products"]',
+          'a[href*="coupang.com/vp/products"]',
+          'a[href*="/goods"]',
+          'a[href*="/product"]',
+          'a[href*="/Item"]'
+        ].join(", ")
+      )
+    );
+    for (const link of productLinks) {
+      let card = link;
+      for (let depth = 0; card?.parentElement && depth < 8; depth += 1) {
+        const text = textOf(card);
+        if (pricePattern.test(text) && text.length > 30 && text.length < 2200) break;
+        card = card.parentElement;
+      }
+      addCandidate(card, link);
+      if (candidates.length >= 12) break;
+    }
+
     const cardSelectors = [
+      "[class*=box__item]",
+      "[class*=box__component]",
+      "[class*=section__item]",
+      "[class*=section__module]",
+      "[class*=list-item]",
+      "[class*=itemcard]",
       "li[class*=prod]",
       "li[class*=product]",
       "li[class*=item]",
@@ -1086,7 +1208,7 @@ async function extractVisibleItems(page, platformName, input, target) {
     }
 
     return { blocked: pageBlocked && !candidates.length, items: candidates };
-  });
+  }, { currentSpec: specToString(target.spec) });
 
   if (rawItems.blocked) {
     return { blocked: true, items: [] };
@@ -1310,21 +1432,56 @@ function combinePlatformItems(platformName, input, collected, searchUrls) {
   };
 }
 
-async function collectSpecTarget(context, platform, input, target) {
+function manualUnblockWaitMs() {
+  return Number(process.env.TIRE_MANUAL_UNBLOCK_WAIT_MS || DEFAULT_MANUAL_UNBLOCK_WAIT_MS);
+}
+
+async function retryAfterManualUnblock(page, platform, input, target, jobPath, outputPath) {
+  const waitMs = manualUnblockWaitMs();
+  await writeJob(jobPath, {
+    status: "waiting_for_user",
+    message: `${platform.platformName} ${target.label} 규격에서 접근 확인 화면이 감지되었습니다. 열린 브라우저에서 직접 확인을 완료해 주세요. ${Math.round(waitMs / 1000)}초 후 같은 탭에서 다시 추출합니다.`,
+    outputPath
+  });
+  await page.bringToFront().catch(() => {});
+  await page.waitForTimeout(waitMs);
+  await page.waitForLoadState("domcontentloaded", { timeout: 15000 }).catch(() => {});
+  await dismissPopups(page);
+  await sortByLowestPrice(page);
+  return extractVisibleItems(page, platform.platformName, input, target);
+}
+
+async function collectSpecTarget(context, platform, input, target, jobPath, outputPath) {
   const page = await context.newPage();
   let searchUrl = platform.homeUrl;
 
   try {
     searchUrl = await openSearchPage(page, platform, input, target);
-    const extracted = await extractVisibleItems(page, platform.platformName, input, target);
+    let extracted = await extractVisibleItems(page, platform.platformName, input, target);
+
+    if (extracted.blocked) {
+      extracted = await retryAfterManualUnblock(page, platform, input, target, jobPath, outputPath);
+    }
 
     if (extracted.blocked) {
       return {
         searchUrl,
         items: [],
-        errorMessage: `${target.label} 규격 캡차/접근 제한 화면이 감지되었습니다. 열린 브라우저에서 직접 확인하세요.`,
+        errorMessage: `${target.label} 규격 캡차/접근 제한 화면이 남아 있습니다. 열린 브라우저에서 직접 확인 후 다시 실행하거나 수동 보정하세요.`,
         keepOpen: true
       };
+    }
+
+    if (!extracted.items.length && ["G마켓", "쿠팡"].includes(platform.platformName)) {
+      extracted = await retryAfterManualUnblock(page, platform, input, target, jobPath, outputPath);
+      if (extracted.blocked) {
+        return {
+          searchUrl,
+          items: [],
+          errorMessage: `${target.label} 규격 접근 확인 화면이 남아 있습니다. 열린 브라우저에서 직접 확인 후 다시 실행하거나 수동 보정하세요.`,
+          keepOpen: true
+        };
+      }
     }
 
     if (!extracted.items.length) {
@@ -1352,7 +1509,7 @@ async function collectSpecTarget(context, platform, input, target) {
   }
 }
 
-async function collectPlatform(context, platform, input) {
+async function collectPlatform(context, platform, input, jobPath, outputPath) {
   const collected = {};
   const searchUrls = {};
   const errors = [];
@@ -1360,7 +1517,7 @@ async function collectPlatform(context, platform, input) {
   const targets = specTargets(input);
 
   for (const target of targets) {
-    const result = await collectSpecTarget(context, platform, input, target);
+    const result = await collectSpecTarget(context, platform, input, target, jobPath, outputPath);
     collected[target.side] = result;
     searchUrls[target.side] = result.searchUrl;
     keepOpen = keepOpen || result.keepOpen;
@@ -1408,7 +1565,7 @@ async function main() {
         outputPath,
         partialResults: results
       });
-      const { result, keepOpen } = await collectPlatform(context, platform, input);
+      const { result, keepOpen } = await collectPlatform(context, platform, input, jobPath, outputPath);
       results.push(result);
       hasManualPages = hasManualPages || keepOpen;
     }
