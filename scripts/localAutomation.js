@@ -222,7 +222,7 @@ async function openSearchPage(page, platform, input, target) {
   await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
   await page.waitForTimeout(2500);
   await dismissPopups(page);
-  await sortByLowestPrice(page);
+  await sortByLowestPrice(page, platform.platformName);
   return targetUrl;
 }
 
@@ -318,11 +318,15 @@ async function openHomeSearchPage(page, platform, input, target) {
   await page.waitForLoadState("domcontentloaded", { timeout: 30000 }).catch(() => {});
   await page.waitForTimeout(3000);
   await dismissPopups(page);
-  await sortByLowestPrice(page);
+  await sortByLowestPrice(page, platform.platformName);
   return page.url();
 }
 
-async function sortByLowestPrice(page) {
+async function sortByLowestPrice(page, platformName = "") {
+  if (platformName === "G마켓" && (await sortGmarketByLowestPrice(page))) {
+    return true;
+  }
+
   const labels = ["낮은가격순", "낮은 가격순", "낮은 가격", "가격 낮은 순", "가격낮은순", "최저가순", "저가순"];
   for (const label of labels) {
     try {
@@ -376,6 +380,66 @@ async function sortByLowestPrice(page) {
     // Fall through to URL-based attempts.
   }
   return false;
+}
+
+async function sortGmarketByLowestPrice(page) {
+  const opened =
+    (await clickFirstVisible(page, page.getByText("추천순", { exact: true }), { force: true })) ||
+    (await clickFirstVisible(page, page.locator("button, a, div, span").filter({ hasText: /^\s*추천순\s*$/ }), { force: true }));
+
+  if (opened) {
+    await page.waitForTimeout(600);
+    const selected =
+      (await clickFirstVisible(page, page.getByText("낮은 가격순", { exact: true }), { force: true })) ||
+      (await clickFirstVisible(page, page.getByText("낮은가격순", { exact: true }), { force: true })) ||
+      (await clickFirstVisible(page, page.getByText("가격 낮은 순", { exact: true }), { force: true }));
+    if (selected) {
+      await page.waitForLoadState("domcontentloaded", { timeout: 12000 }).catch(() => {});
+      await page.waitForTimeout(1800);
+      await dismissPopups(page);
+      return true;
+    }
+  }
+
+  try {
+    const clicked = await page.evaluate(() => {
+      const textOf = (node) => (node?.innerText || node?.textContent || "").replace(/\s+/g, " ").trim();
+      const visible = (element) => {
+        const rect = element.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      };
+      const controls = Array.from(document.querySelectorAll("button, a, div, span, [role='button'], [aria-haspopup]"));
+      const recommendation = controls.find((element) => textOf(element) === "추천순" && visible(element));
+      if (recommendation) {
+        recommendation.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+      }
+      const options = Array.from(document.querySelectorAll("button, a, li, div, span, [role='option'], [role='menuitem']"));
+      const option = options.find((element) => /낮은\s*가격순|낮은가격순|가격\s*낮은\s*순/.test(textOf(element)) && visible(element));
+      if (!option) return false;
+      option.scrollIntoView({ block: "center", inline: "center" });
+      option.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+      return true;
+    });
+    if (clicked) {
+      await page.waitForLoadState("domcontentloaded", { timeout: 12000 }).catch(() => {});
+      await page.waitForTimeout(1800);
+      await dismissPopups(page);
+      return true;
+    }
+  } catch {
+    // Continue with URL fallback below.
+  }
+
+  try {
+    const url = new URL(page.url());
+    url.searchParams.set("sort", "price_asc");
+    url.searchParams.set("sortType", "price_asc");
+    await page.goto(url.toString(), { waitUntil: "domcontentloaded", timeout: 30000 });
+    await page.waitForTimeout(1800);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function openTstationSearchPage(page, platform, _input, target) {
@@ -1447,7 +1511,7 @@ async function retryAfterManualUnblock(page, platform, input, target, jobPath, o
   await page.waitForTimeout(waitMs);
   await page.waitForLoadState("domcontentloaded", { timeout: 15000 }).catch(() => {});
   await dismissPopups(page);
-  await sortByLowestPrice(page);
+  await sortByLowestPrice(page, platform.platformName);
   return extractVisibleItems(page, platform.platformName, input, target);
 }
 
