@@ -102,10 +102,13 @@ function brandSearchTerms(brand) {
     "미쉐린": ["미쉐린", "michelin", "미쉐린타이어"],
     "미쉐린타이어": ["미쉐린타이어", "미쉐린", "michelin"],
     hankook: ["hankook", "한국", "한국타이어"],
+    "한국타이어": ["한국타이어", "한국", "hankook"],
     "한국": ["한국", "한국타이어", "hankook"],
     kumho: ["kumho", "금호", "금호타이어"],
+    "금호타이어": ["금호타이어", "금호", "kumho"],
     "금호": ["금호", "금호타이어", "kumho"],
     nexen: ["nexen", "넥센", "넥센타이어"],
+    "넥센타이어": ["넥센타이어", "넥센", "nexen"],
     "넥센": ["넥센", "넥센타이어", "nexen"],
     pirelli: ["pirelli", "피렐리"],
     "피렐리": ["피렐리", "pirelli"],
@@ -126,6 +129,30 @@ function searchBrandFor(brand) {
 
 function productLabel(input) {
   return input?.label || [input?.brand, input?.modelName || input?.keyword].filter(Boolean).join(" ") || "제품";
+}
+
+function modelAliasTerms(modelName) {
+  const normalized = String(modelName || "").trim().toLowerCase();
+  const aliases = [];
+
+  if (/cross\s*climate|crossclimate|크로스\s*클라이밋/.test(normalized)) {
+    aliases.push("크로스클라이밋", "크로스 클라이밋", "crossclimate", "cross climate");
+  }
+
+  if (/(?:^|\s)ion\s*evo|아이온\s*에보|ih01/.test(normalized)) {
+    aliases.push("아이온", "아이온 에보", "아이온 에보 as", "ion evo", "ion evo as", "ih01");
+  }
+
+  if (/primacy|프라이머시/.test(normalized)) {
+    aliases.push("프라이머시", "primacy");
+  }
+
+  return Array.from(new Set(aliases));
+}
+
+function includesAnyTerm(text, terms) {
+  const normalizedText = String(text || "").toLowerCase();
+  return terms.some((term) => normalizedText.includes(String(term).toLowerCase()));
 }
 
 function cleanProductName(value) {
@@ -299,31 +326,11 @@ async function selectAbcSizeOption(page, selectIndex, value) {
 }
 
 async function openAbcSearchPage(page, platform, _input, target) {
-  await page.goto(platform.homeUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
-  await page.waitForTimeout(1500);
-  await dismissPopups(page);
-
-  const opened = await clickFirstVisible(page, page.getByText("사이즈", { exact: true }), { force: true });
-  if (!opened) {
-    throw new Error("ABC타이어 사이즈 검색 탭을 열지 못했습니다.");
-  }
-  await page.waitForTimeout(800);
-
-  await selectAbcSizeOption(page, 0, String(target.spec.width));
-  await selectAbcSizeOption(page, 1, String(target.spec.aspectRatio));
-  await selectAbcSizeOption(page, 2, String(target.spec.rim));
-
   const resultUrl = abcTireSizeUrl(target.spec);
-  try {
-    const productButton = page.getByRole("button", { name: /제품 보러가기/ }).first();
-    await productButton.click({ force: true, timeout: 5000 });
-    await page.waitForLoadState("domcontentloaded", { timeout: 15000 });
-  } catch {
-    await page.goto(resultUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
-  }
+  await page.goto(resultUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
   await page.waitForTimeout(3500);
   await dismissPopups(page);
-  return page.url() || resultUrl;
+  return resultUrl;
 }
 
 async function openHomeSearchPage(page, platform, input, target) {
@@ -900,7 +907,7 @@ async function extractAbcItems(page, input, target) {
           productUrl: href,
           rawText: text.slice(0, 500)
         });
-        if (candidates.length >= 8) break;
+        if (candidates.length >= 40) break;
       }
 
       return { blocked: false, items: candidates };
@@ -912,24 +919,21 @@ async function extractAbcItems(page, input, target) {
     return { blocked: true, items: [] };
   }
 
-  const modelTokens = String(input.modelName || input.keyword || "")
+  const modelName = String(input.modelName || input.keyword || "");
+  const modelTokens = modelName
     .toLowerCase()
     .split(/\s+/)
     .filter((token) => token.length >= 2);
-  const modelAliases = [];
-  if (/cross\s*climate|crossclimate/i.test(String(input.modelName || input.keyword || ""))) {
-    modelAliases.push("크로스클라이밋", "크로스 클라이밋", "crossclimate", "cross climate");
-  }
+  const modelAliases = modelAliasTerms(modelName);
+  const brandTerms = brandSearchTerms(input.brand);
 
-  const items = rawItems.items.slice(0, 5).map((item, index) => {
+  const items = rawItems.items.map((item, index) => {
     const text = [item.productName, item.rawText].filter(Boolean).join(" ").toLowerCase();
-    const brand = String(input.brand || "").toLowerCase();
-    const brandKo = brand === "michelin" ? "미쉐린" : brand;
-    const brandMatch = brand ? text.includes(brand) || text.includes(brandKo) : true;
-    const aliasMatch = modelAliases.some((alias) => text.includes(alias));
+    const brandMatch = brandTerms.length ? includesAnyTerm(text, brandTerms) : true;
+    const aliasMatch = includesAnyTerm(text, modelAliases);
     const modelMatchCount = modelTokens.filter((token) => text.includes(token)).length;
     const modelMatch = aliasMatch || !modelTokens.length || modelMatchCount >= Math.min(2, modelTokens.length);
-    const confidence = modelMatch ? "high" : brandMatch ? "medium" : "low";
+    const confidence = brandMatch && modelMatch ? "high" : brandMatch || modelMatch ? "medium" : "low";
 
     return normalizeItem({
       id: `local-ABC타이어-${target.side}-${Date.now()}-${index}`,
@@ -958,9 +962,9 @@ async function extractAbcItems(page, input, target) {
   }).filter((item) => {
     if (item.confidence === "low") return false;
     if (!modelAliases.length) return true;
-    const productName = String(item.productName || "").toLowerCase();
-    return modelAliases.some((alias) => productName.includes(alias));
-  });
+    const candidateText = [item.productName, item.selectionText].filter(Boolean).join(" ");
+    return includesAnyTerm(candidateText, modelAliases);
+  }).slice(0, 5);
 
   return { blocked: false, items };
 }
