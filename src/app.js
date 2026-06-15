@@ -5,6 +5,8 @@ import { fetchMockPrices, fetchStatuses, getPlatforms, makeCollectingResults } f
 const apiBase = window.TIRE_API_BASE || "";
 
 const defaultInput = {
+  id: "product-1",
+  label: "기본 제품",
   vehicleName: "Volvo C40 Recharge",
   frontSpec: { width: "235", aspectRatio: "45", rim: "20" },
   rearSpec: { width: "255", aspectRatio: "40", rim: "20" },
@@ -17,7 +19,30 @@ const defaultInput = {
   preferInstallIncluded: true
 };
 
+function createProduct(overrides = {}, index = 1) {
+  return {
+    ...structuredClone(defaultInput),
+    ...structuredClone(overrides),
+    id: overrides.id || `product-${Date.now()}-${index}`,
+    label: overrides.label || `제품 ${index}`,
+    frontSpec: {
+      ...structuredClone(defaultInput.frontSpec),
+      ...(overrides.frontSpec || {})
+    },
+    rearSpec: {
+      ...structuredClone(defaultInput.rearSpec),
+      ...(overrides.rearSpec || {})
+    }
+  };
+}
+
+function productLabel(product) {
+  return product?.label || [product?.brand, product?.modelName || product?.keyword].filter(Boolean).join(" ") || "제품";
+}
+
 const state = {
+  products: [createProduct(defaultInput, 1)],
+  activeProductId: "product-1",
   input: structuredClone(defaultInput),
   results: [],
   sortKey: "totalPrice",
@@ -33,7 +58,15 @@ const state = {
 
 const saved = loadState();
 if (saved) {
-  state.input = saved.input || state.input;
+  if (Array.isArray(saved.products) && saved.products.length) {
+    state.products = saved.products.map((product, index) => createProduct(product, index + 1));
+  } else if (saved.input) {
+    state.products = [createProduct(saved.input, 1)];
+  }
+  state.activeProductId = state.products.some((product) => product.id === saved.activeProductId)
+    ? saved.activeProductId
+    : state.products[0].id;
+  state.input = activeInput();
   state.results = saved.results || [];
   state.sortKey = saved.sortKey || state.sortKey;
   state.statusFilter = saved.statusFilter || state.statusFilter;
@@ -54,7 +87,9 @@ app.addEventListener("click", (event) => {
 
 function persist() {
   saveState({
-    input: state.input,
+    products: state.products,
+    activeProductId: state.activeProductId,
+    input: activeInput(),
     results: state.results,
     sortKey: state.sortKey,
     statusFilter: state.statusFilter,
@@ -184,13 +219,27 @@ function formatDate(value) {
   }).format(new Date(value));
 }
 
+function activeInput() {
+  const product = state.products.find((item) => item.id === state.activeProductId) || state.products[0];
+  state.activeProductId = product.id;
+  state.input = product;
+  return product;
+}
+
+function setActiveProduct(id) {
+  if (state.products.some((product) => product.id === id)) {
+    state.activeProductId = id;
+    state.input = activeInput();
+  }
+}
+
 function inputValue(path) {
-  return path.split(".").reduce((current, key) => current?.[key], state.input) ?? "";
+  return path.split(".").reduce((current, key) => current?.[key], activeInput()) ?? "";
 }
 
 function setInputValue(path, value) {
   const keys = path.split(".");
-  let current = state.input;
+  let current = activeInput();
   keys.slice(0, -1).forEach((key) => {
     current = current[key];
   });
@@ -200,8 +249,9 @@ function setInputValue(path, value) {
 
 function updateSearchPreview() {
   const preview = app.querySelector("[data-spec-preview]");
+  const input = activeInput();
   if (preview) {
-    preview.textContent = `앞 ${specToString(state.input.frontSpec)} · 뒤 ${specToString(state.input.rearSpec)}`;
+    preview.textContent = `앞 ${specToString(input.frontSpec)} · 뒤 ${specToString(input.rearSpec)}`;
   }
 }
 
@@ -210,6 +260,8 @@ function allItems() {
     if (state.excludedPlatforms.has(result.platformName) || state.collapsedPlatforms.has(result.platformName)) return [];
     return (result.items || []).map((item) => ({
       ...item,
+      productId: item.productId || state.activeProductId,
+      productLabel: item.productLabel || productLabel(state.products.find((product) => product.id === item.productId) || activeInput()),
       fetchStatus: result.status,
       errorMessage: result.errorMessage,
       searchUrl: result.searchUrl
@@ -226,6 +278,7 @@ function filteredItems() {
 
   const sorted = [...items].sort((a, b) => {
     if (state.sortKey === "platformName") return a.platformName.localeCompare(b.platformName, "ko-KR");
+    if (state.sortKey === "productLabel") return String(a.productLabel || "").localeCompare(String(b.productLabel || ""), "ko-KR");
     if (state.sortKey === "unitPrice") return Number(a.unitPrice || 0) - Number(b.unitPrice || 0);
     if (state.sortKey === "shippingFee") return Number(a.shippingFee || 0) - Number(b.shippingFee || 0);
     if (state.sortKey === "installIncluded") return Number(b.installIncluded === true) - Number(a.installIncluded === true);
@@ -244,12 +297,87 @@ function summary() {
   const items = allItems();
   const lowest = getLowestItem(items);
   return {
+    products: state.products.length,
     platforms: results.length,
     success: results.filter((result) => ["success", "partial"].includes(result.status)).length,
     manual: results.filter((result) => ["manual_required", "failed", "blocked", "unsupported"].includes(result.status)).length,
     items: items.length,
     lowest
   };
+}
+
+function statusRank(status) {
+  const ranks = {
+    collecting: 6,
+    success: 5,
+    partial: 4,
+    manual_required: 3,
+    unsupported: 2,
+    blocked: 1,
+    failed: 0
+  };
+  return ranks[status] ?? 0;
+}
+
+function tagResultForProduct(result, product) {
+  return {
+    ...result,
+    items: (result.items || []).map((item) => ({
+      ...item,
+      id: `${product.id}-${item.id}`,
+      productId: product.id,
+      productLabel: productLabel(product)
+    }))
+  };
+}
+
+function mergeProductResults(productResultSets) {
+  const byPlatform = new Map();
+  for (const { product, results } of productResultSets) {
+    for (const rawResult of results || []) {
+      const result = tagResultForProduct(rawResult, product);
+      const current =
+        byPlatform.get(result.platformName) ||
+        {
+          platformName: result.platformName,
+          searchUrl: result.searchUrl,
+          status: result.status,
+          items: [],
+          errorMessages: []
+        };
+      current.searchUrl = result.searchUrl || current.searchUrl;
+      current.status = statusRank(result.status) > statusRank(current.status) ? result.status : current.status;
+      current.items.push(...(result.items || []));
+      if (result.errorMessage) current.errorMessages.push(`${productLabel(product)}: ${result.errorMessage}`);
+      byPlatform.set(result.platformName, current);
+    }
+  }
+
+  return [...byPlatform.values()].map((result) => ({
+    platformName: result.platformName,
+    searchUrl: result.searchUrl,
+    status: result.status,
+    items: result.items,
+    errorMessage: result.errorMessages.length ? result.errorMessages.join(" / ") : undefined
+  }));
+}
+
+function applyLoadedPayload(payload) {
+  if (Array.isArray(payload.products) && payload.products.length) {
+    const productSets = payload.products.map((product, index) => ({
+      product: createProduct(product, index + 1),
+      results: payload.resultsByProduct?.[product.id] || []
+    }));
+    state.products = productSets.map((set) => set.product);
+    state.activeProductId = state.products[0].id;
+    state.results = mergeProductResults(productSets);
+    return;
+  }
+
+  const product = createProduct(payload.input || activeInput(), 1);
+  state.products = [product];
+  state.activeProductId = product.id;
+  state.results = mergeProductResults([{ product, results: payload.results || [] }]);
 }
 
 function render() {
@@ -270,10 +398,12 @@ function render() {
     <main class="app-shell">
       <section class="workspace">
         ${renderNotice()}
+        ${renderProductManager()}
         ${renderSearchPanel()}
         ${renderPlatformPicker()}
         ${renderMetrics(data)}
         ${renderStatusCards()}
+        ${renderProductComparison()}
         ${renderComparePanel()}
       </section>
     </main>
@@ -286,6 +416,37 @@ function renderNotice() {
   return `<div class="notice">${state.notice}</div>`;
 }
 
+function renderProductManager() {
+  const active = activeInput();
+  return `
+    <section class="panel product-manager" aria-label="비교 제품">
+      <div class="panel-heading">
+        <div>
+          <h2>비교 제품</h2>
+          <p>여러 타이어 제품을 등록하면 제품별 플랫폼 최저가와 제품 간 최저가를 함께 비교합니다.</p>
+        </div>
+        <div class="product-actions">
+          <button class="secondary-button" data-action="add-product">제품 추가</button>
+          <button class="ghost-button" data-action="duplicate-product">현재 제품 복제</button>
+          <button class="ghost-button" data-action="remove-product" ${state.products.length <= 1 ? "disabled" : ""}>삭제</button>
+        </div>
+      </div>
+      <div class="product-tabs">
+        ${state.products
+          .map(
+            (product) => `
+              <button class="product-tab ${product.id === active.id ? "is-active" : ""}" data-action="select-product" data-product-id="${escapeHtml(product.id)}">
+                <strong>${escapeHtml(productLabel(product))}</strong>
+                <span>${escapeHtml(product.brand || "-")} · ${escapeHtml(product.modelName || product.keyword || "-")}</span>
+              </button>
+            `
+          )
+          .join("")}
+      </div>
+    </section>
+  `;
+}
+
 function field(label, path, type = "text", attrs = "", className = "") {
   return `
     <label class="field ${className}">
@@ -296,6 +457,7 @@ function field(label, path, type = "text", attrs = "", className = "") {
 }
 
 function renderSearchPanel() {
+  const input = activeInput();
   return `
     <section class="panel search-panel" aria-label="검색 조건">
       <div class="panel-heading">
@@ -307,6 +469,7 @@ function renderSearchPanel() {
       </div>
 
       <div class="form-grid">
+        ${field("제품 표시명", "label", "text", "", "wide-field")}
         ${field("차량명", "vehicleName", "text", "", "wide-field")}
         ${field("브랜드", "brand")}
         ${field("모델명", "modelName", "text", "", "wide-field")}
@@ -323,10 +486,10 @@ function renderSearchPanel() {
 
       <div class="form-footer">
         <label class="toggle">
-          <input type="checkbox" data-input="preferInstallIncluded" ${state.input.preferInstallIncluded ? "checked" : ""} />
+          <input type="checkbox" data-input="preferInstallIncluded" ${input.preferInstallIncluded ? "checked" : ""} />
           <span>장착비 포함 상품 우선</span>
         </label>
-        <span class="spec-preview" data-spec-preview>앞 ${specToString(state.input.frontSpec)} · 뒤 ${specToString(state.input.rearSpec)}</span>
+        <span class="spec-preview" data-spec-preview>앞 ${specToString(input.frontSpec)} · 뒤 ${specToString(input.rearSpec)}</span>
       </div>
     </section>
   `;
@@ -368,6 +531,7 @@ function renderPlatformPicker() {
 function renderMetrics(data) {
   return `
     <section class="metric-strip" aria-label="요약">
+      <div><span>제품</span><strong>${data.products || 0}</strong></div>
       <div><span>플랫폼</span><strong>${data.platforms || 0}</strong></div>
       <div><span>예시/수집</span><strong>${data.success || 0}</strong></div>
       <div><span>수동 확인</span><strong>${data.manual || 0}</strong></div>
@@ -420,6 +584,52 @@ function renderStatusCard(result) {
   `;
 }
 
+function bestItemsByProduct() {
+  return state.products.map((product) => {
+    const items = allItems().filter((item) => item.productId === product.id && !item.incompleteSet);
+    return {
+      product,
+      lowest: getLowestItem(items),
+      candidates: items.length
+    };
+  });
+}
+
+function renderProductComparison() {
+  const rows = bestItemsByProduct();
+  const winner = rows
+    .map((row) => row.lowest)
+    .filter(Boolean)
+    .sort((a, b) => Number(a.totalPrice || 0) - Number(b.totalPrice || 0))[0];
+
+  return `
+    <section class="panel product-comparison" aria-label="제품별 비교">
+      <div class="panel-heading">
+        <div>
+          <h2>제품별 최저가</h2>
+          <p>각 제품의 플랫폼별 후보 중 최저 총액을 비교합니다.</p>
+        </div>
+      </div>
+      <div class="product-compare-grid">
+        ${rows
+          .map(({ product, lowest, candidates }) => {
+            const isWinner = winner && lowest?.id === winner.id;
+            return `
+              <article class="product-compare-card ${isWinner ? "is-winner" : ""}">
+                <div>
+                  <span>${escapeHtml(productLabel(product))}</span>
+                  <strong>${lowest ? money(lowest.totalPrice) : "-"}</strong>
+                </div>
+                <p>${lowest ? `${escapeHtml(lowest.platformName)} · 후보 ${candidates}개` : "아직 수집된 가격 후보가 없습니다."}</p>
+              </article>
+            `;
+          })
+          .join("")}
+      </div>
+    </section>
+  `;
+}
+
 function renderComparePanel() {
   const items = filteredItems();
   const lowest = getLowestItem(allItems());
@@ -436,6 +646,7 @@ function renderComparePanel() {
             <span>정렬</span>
             <select data-control="sortKey">
               ${option("totalPrice", "최종 총액", state.sortKey)}
+              ${option("productLabel", "제품명", state.sortKey)}
               ${option("unitPrice", "평균 단가", state.sortKey)}
               ${option("installIncluded", "장착비 포함", state.sortKey)}
               ${option("shippingFee", "배송비", state.sortKey)}
@@ -466,6 +677,7 @@ function renderComparePanel() {
           <thead>
             <tr>
               <th>순위</th>
+              <th>제품</th>
               <th>플랫폼</th>
               <th>앞 후보</th>
               <th>앞 단가</th>
@@ -484,7 +696,7 @@ function renderComparePanel() {
             ${
               items.length
                 ? items.map((item, index) => renderTableRow(item, index, lowest)).join("")
-                : `<tr><td colspan="13" class="empty-cell">자동 검색을 실행하거나 수동 보정에서 가격을 추가하세요.</td></tr>`
+                : `<tr><td colspan="14" class="empty-cell">자동 검색을 실행하거나 수동 보정에서 가격을 추가하세요.</td></tr>`
             }
           </tbody>
         </table>
@@ -510,6 +722,7 @@ function renderTableRow(item, index, lowest) {
   return `
     <tr class="${isLowest ? "lowest-row" : ""}">
       <td>${isLowest ? "최저가" : index + 1}</td>
+      <td><strong>${escapeHtml(item.productLabel || "-")}</strong></td>
       <td><strong>${escapeHtml(item.platformName)}</strong>${item.manual ? `<span class="manual-dot">수동</span>` : ""}</td>
       <td class="candidate-cell">${frontLabel}</td>
       <td>${frontPrice}</td>
@@ -544,12 +757,15 @@ function renderPriceLinks(item) {
 function renderManualModal() {
   if (!state.isManualModalOpen) return "";
   const selected = findItemById(state.selectedItemId);
+  const input = activeInput();
   const values = selected || {
+    productId: input.id,
+    productLabel: productLabel(input),
     platformName: state.manualPlatform,
-    productName: `${state.input.brand} ${state.input.modelName}`,
-    spec: `${specToString(state.input.frontSpec)} / ${specToString(state.input.rearSpec)}`,
+    productName: `${input.brand} ${input.modelName}`,
+    spec: `${specToString(input.frontSpec)} / ${specToString(input.rearSpec)}`,
     unitPrice: "",
-    quantity: state.input.frontQuantity + state.input.rearQuantity,
+    quantity: input.frontQuantity + input.rearQuantity,
     shippingFee: 0,
     installationFee: 0,
     discount: 0,
@@ -571,6 +787,12 @@ function renderManualModal() {
         </div>
 
         <form class="manual-form" data-manual-form>
+        <label class="field">
+          <span>제품</span>
+          <select name="productId">
+            ${state.products.map((product) => option(product.id, productLabel(product), values.productId || input.id)).join("")}
+          </select>
+        </label>
         <label class="field">
           <span>플랫폼</span>
           <select name="platformName">
@@ -668,7 +890,7 @@ function handleAction(event) {
   if (action === "load-local-results") {
     loadLocalResults()
       .then((payload) => {
-        state.results = payload.results;
+        applyLoadedPayload(payload);
         state.notice = `저장된 로컬 자동화 JSON을 불러왔습니다. 수집 시각: ${formatDate(payload.collectedAt)}`;
         persist();
         render();
@@ -681,7 +903,7 @@ function handleAction(event) {
   }
 
   if (action === "demo-search") {
-    state.results = fetchMockPrices(state.input);
+    state.results = mergeProductResults(state.products.map((product) => ({ product, results: fetchMockPrices(product) })));
     state.notice = "예시 가격이 표시되었습니다. 실제 현재가는 가격 확인 링크에서 확인해 수동 보정하세요.";
     persist();
     render();
@@ -697,7 +919,9 @@ function handleAction(event) {
 
   if (action === "clear-storage") {
     clearState();
-    state.input = structuredClone(defaultInput);
+    state.products = [createProduct(defaultInput, 1)];
+    state.activeProductId = state.products[0].id;
+    state.input = activeInput();
     state.results = [];
     state.sortKey = "totalPrice";
     state.statusFilter = "all";
@@ -707,6 +931,71 @@ function handleAction(event) {
     state.selectedItemId = null;
     state.isManualModalOpen = false;
     state.notice = "저장 데이터를 초기화했습니다. 기본 예시로 돌아왔습니다.";
+    render();
+    return;
+  }
+
+  if (action === "select-product") {
+    setActiveProduct(button.dataset.productId);
+    persist();
+    render();
+    return;
+  }
+
+  if (action === "add-product") {
+    const base = activeInput();
+    const product = createProduct(
+      {
+        vehicleName: base.vehicleName,
+        frontSpec: base.frontSpec,
+        rearSpec: base.rearSpec,
+        region: base.region,
+        frontQuantity: base.frontQuantity,
+        rearQuantity: base.rearQuantity,
+        preferInstallIncluded: base.preferInstallIncluded,
+        brand: "",
+        modelName: "",
+        keyword: "",
+        label: `제품 ${state.products.length + 1}`
+      },
+      state.products.length + 1
+    );
+    state.products.push(product);
+    setActiveProduct(product.id);
+    state.notice = "새 비교 제품을 추가했습니다.";
+    persist();
+    render();
+    return;
+  }
+
+  if (action === "duplicate-product") {
+    const base = activeInput();
+    const product = createProduct(
+      {
+        ...structuredClone(base),
+        id: undefined,
+        label: `${productLabel(base)} 복사`
+      },
+      state.products.length + 1
+    );
+    state.products.push(product);
+    setActiveProduct(product.id);
+    state.notice = "현재 제품 조건을 복제했습니다.";
+    persist();
+    render();
+    return;
+  }
+
+  if (action === "remove-product") {
+    if (state.products.length <= 1) return;
+    const removedId = activeInput().id;
+    state.products = state.products.filter((product) => product.id !== removedId);
+    state.results.forEach((result) => {
+      result.items = (result.items || []).filter((item) => item.productId !== removedId);
+    });
+    setActiveProduct(state.products[0].id);
+    state.notice = "선택한 제품을 비교 목록에서 제거했습니다.";
+    persist();
     render();
     return;
   }
@@ -793,7 +1082,8 @@ function handleAction(event) {
 }
 
 function startLocalAutomationSearch() {
-  state.results = makeCollectingResults(state.input).map((result) =>
+  const products = state.products.map((product, index) => createProduct(product, index + 1));
+  state.results = makeCollectingResults(activeInput()).map((result) =>
     state.excludedPlatforms.has(result.platformName)
       ? {
           ...result,
@@ -807,20 +1097,31 @@ function startLocalAutomationSearch() {
   render();
 
   const excludedPlatforms = [...state.excludedPlatforms];
-  runLocalAutomation(state.input, { excludedPlatforms }, (status) => {
-    state.notice = status.message || "로컬 브라우저 자동화가 진행 중입니다.";
-    render();
-  })
-    .then((payload) => {
-      state.results = payload.results;
+  const collected = [];
+
+  (async () => {
+    for (let index = 0; index < products.length; index += 1) {
+      const product = products[index];
+      state.notice = `${index + 1}/${products.length} ${productLabel(product)} 로컬 자동화 실행 중`;
+      render();
+      const payload = await runLocalAutomation(product, { excludedPlatforms }, (status) => {
+        state.notice = `${index + 1}/${products.length} ${productLabel(product)} · ${status.message || "진행 중"}`;
+        render();
+      });
+      collected.push({ product, results: payload.results || [] });
+      state.results = mergeProductResults(collected);
+      persist();
+      render();
+    }
+  })()
+    .then(() => {
       state.notice = excludedPlatforms.length
-        ? `로컬 자동화가 완료되었습니다. 비교 제외 플랫폼 ${excludedPlatforms.length}개는 건너뛰었습니다.`
-        : "로컬 자동화가 완료되었습니다. 자동 추출 실패 사이트는 열린 브라우저 탭에서 직접 확인해 수동 보정하세요.";
+        ? `전체 제품 자동화가 완료되었습니다. 비교 제외 플랫폼 ${excludedPlatforms.length}개는 건너뛰었습니다.`
+        : "전체 제품 자동화가 완료되었습니다. 제품별 최저가를 비교표에서 확인하세요.";
       persist();
       render();
     })
     .catch((error) => {
-      state.results = [];
       state.notice = `${error.message}. 이 기능은 로컬 Node 서버와 Chrome/Edge가 설치된 PC에서 실행해야 합니다.`;
       persist();
       render();
@@ -831,9 +1132,13 @@ function handleManualSubmit(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
   const platformName = String(form.get("platformName"));
+  const productId = String(form.get("productId") || activeInput().id);
+  const product = state.products.find((item) => item.id === productId) || activeInput();
   const installValue = String(form.get("installIncluded"));
   const manualItem = normalizeItem({
     id: state.selectedItemId || `manual-${platformName}-${Date.now()}`,
+    productId: product.id,
+    productLabel: productLabel(product),
     platformName,
     productName: String(form.get("productName") || ""),
     spec: String(form.get("spec") || ""),
