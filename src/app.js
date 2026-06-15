@@ -198,6 +198,13 @@ function setInputValue(path, value) {
   current[last] = ["frontQuantity", "rearQuantity"].includes(last) ? Number(value) : value;
 }
 
+function updateSearchPreview() {
+  const preview = app.querySelector("[data-spec-preview]");
+  if (preview) {
+    preview.textContent = `앞 ${specToString(state.input.frontSpec)} · 뒤 ${specToString(state.input.rearSpec)}`;
+  }
+}
+
 function allItems() {
   return state.results.flatMap((result) => {
     if (state.excludedPlatforms.has(result.platformName) || state.collapsedPlatforms.has(result.platformName)) return [];
@@ -319,7 +326,7 @@ function renderSearchPanel() {
           <input type="checkbox" data-input="preferInstallIncluded" ${state.input.preferInstallIncluded ? "checked" : ""} />
           <span>장착비 포함 상품 우선</span>
         </label>
-        <span class="spec-preview">앞 ${specToString(state.input.frontSpec)} · 뒤 ${specToString(state.input.rearSpec)}</span>
+        <span class="spec-preview" data-spec-preview>앞 ${specToString(state.input.frontSpec)} · 뒤 ${specToString(state.input.rearSpec)}</span>
       </div>
     </section>
   `;
@@ -625,7 +632,7 @@ function bindEvents() {
         setInputValue(target.dataset.input, target.value);
       }
       persist();
-      render();
+      updateSearchPreview();
     });
   });
 
