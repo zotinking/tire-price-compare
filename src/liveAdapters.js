@@ -42,11 +42,6 @@ const platformDefinitions = [
     platformName: "옥션",
     baseUrl: "https://browse.auction.co.kr/search",
     query: "keyword"
-  },
-  {
-    platformName: "쿠팡",
-    baseUrl: "https://www.coupang.com/",
-    query: "q"
   }
 ];
 
@@ -55,7 +50,7 @@ function searchKeyword(input, spec) {
 }
 
 function buildSearchUrl(platform, input, spec = input.frontSpec) {
-  if (platform.platformName === "G마켓" || platform.platformName === "쿠팡") {
+  if (platform.platformName === "G마켓") {
     return platform.baseUrl;
   }
   const url = new URL(platform.baseUrl);
@@ -743,9 +738,8 @@ export async function fetchLivePrices(input) {
   results.push(await probeBlockedPlatform("11번가", input));
   results.push(unsupportedResult(platformDefinitions.find((item) => item.platformName === "G마켓"), input, "봇 의심을 줄이기 위해 서버 요청은 하지 않습니다. 로컬 자동화에서 G마켓 접속 후 검색창 입력 방식으로 확인하세요."));
   results.push(await probeBlockedPlatform("옥션", input));
-  results.push(unsupportedResult(platformDefinitions.find((item) => item.platformName === "쿠팡"), input, "직접 검색 URL 접속이 차단될 수 있어 서버 요청은 하지 않습니다. 로컬 자동화에서 쿠팡 접속 후 검색창 입력 방식으로 확인하세요."));
 
-  const handled = new Set(["다나와", "타이어픽", "ABC타이어", "티스테이션", "네이버 쇼핑", "11번가", "G마켓", "옥션", "쿠팡"]);
+  const handled = new Set(["다나와", "타이어픽", "ABC타이어", "티스테이션", "네이버 쇼핑", "11번가", "G마켓", "옥션"]);
   for (const platform of platformDefinitions) {
     if (handled.has(platform.platformName)) continue;
     results.push(unsupportedResult(platform, input));

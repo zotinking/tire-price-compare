@@ -50,11 +50,6 @@ const platforms = [
     platformName: "옥션",
     baseUrl: "https://browse.auction.co.kr/search",
     query: "keyword"
-  },
-  {
-    platformName: "쿠팡",
-    baseUrl: "https://www.coupang.com/",
-    query: "q"
   }
 ];
 
@@ -69,7 +64,7 @@ function platformByName(platformName) {
 }
 
 export function buildSearchUrl(platform, input) {
-  if (platform.platformName === "G마켓" || platform.platformName === "쿠팡") {
+  if (platform.platformName === "G마켓") {
     return platform.baseUrl;
   }
   const url = new URL(platform.baseUrl);
@@ -240,11 +235,6 @@ function mockFor(platformName, input) {
       status: "blocked",
       items: [],
       errorMessage: "자동화 접근 제한이 의심됩니다."
-    },
-    "쿠팡": {
-      status: "failed",
-      items: [],
-      errorMessage: "검색 결과에서 장착 상품을 분리하지 못했습니다."
     }
   };
 

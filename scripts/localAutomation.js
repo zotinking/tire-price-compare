@@ -49,11 +49,6 @@ const platforms = [
     platformName: "옥션",
     homeUrl: "https://www.auction.co.kr/",
     searchUrl: (query) => `https://browse.auction.co.kr/search?keyword=${encodeURIComponent(query)}`
-  },
-  {
-    platformName: "쿠팡",
-    homeUrl: "https://www.coupang.com/",
-    searchUrl: () => "https://www.coupang.com/"
   }
 ];
 
@@ -213,7 +208,7 @@ async function openSearchPage(page, platform, input, target) {
     return openTstationSearchPage(page, platform, input, target);
   }
 
-  if (platform.platformName === "G마켓" || platform.platformName === "쿠팡") {
+  if (platform.platformName === "G마켓") {
     return openHomeSearchPage(page, platform, input, target);
   }
 
@@ -1215,7 +1210,6 @@ async function extractVisibleItems(page, platformName, input, target) {
           'a[href*="item.gmarket.co.kr"]',
           'a[href*="itempage3.auction.co.kr"]',
           'a[href*="www.11st.co.kr/products"]',
-          'a[href*="coupang.com/vp/products"]',
           'a[href*="/goods"]',
           'a[href*="/product"]',
           'a[href*="/Item"]'
@@ -1536,7 +1530,7 @@ async function collectSpecTarget(context, platform, input, target, jobPath, outp
       };
     }
 
-    if (!extracted.items.length && ["G마켓", "쿠팡"].includes(platform.platformName)) {
+    if (!extracted.items.length && platform.platformName === "G마켓") {
       extracted = await retryAfterManualUnblock(page, platform, input, target, jobPath, outputPath);
       if (extracted.blocked) {
         return {
