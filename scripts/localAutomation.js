@@ -6,7 +6,7 @@ import { normalizeItem, specToString } from "../src/price.js";
 
 const DEFAULT_KEEP_OPEN_MS = 10 * 60 * 1000;
 const INSTALL_INCLUDED_PATTERN = /전국\s*무료\s*장착|무료\s*장착|지정점\s*무료\s*장착|출장\s*무료\s*장착|장착비\s*포함|장착\s*포함|무료\s*교체/;
-const BLOCKED_TEXT_PATTERN = /captcha|캡차|로봇|봇\s*(?:확인|검증|\(bot\))?|비정상|접근이 제한|접속이 제한|요청이 차단|서비스 이용이 제한|access denied|403|보안문자|잠시만 기다리|원활한 서비스 이용/i;
+const BLOCKED_TEXT_PATTERN = /captcha|캡차|로봇|봇\s*(?:확인|검증|\(bot\))?|보안\s*확인|NAVER\s*보안\s*확인|실제 사용자임을 확인|영수증의 가게 위치|비정상|접근이 제한|접속이 제한|접속이 일시적으로 제한|요청이 차단|서비스 이용이 제한|쇼핑 서비스 접속이 일시적으로 제한|외부 이벤트를 통한 접속|원클릭 진단|access denied|403|보안문자|잠시만 기다리|원활한 서비스 이용/i;
 const DEFAULT_MANUAL_UNBLOCK_WAIT_MS = 2 * 60 * 1000;
 
 const platforms = [
@@ -1119,7 +1119,7 @@ async function extractVisibleItems(page, platformName, input, target) {
 
   const rawItems = await page.evaluate(({ currentSpec }) => {
     const pricePattern = /(?:판매가|혜택가|최저가|가격)?\s*([0-9]{1,3}(?:,[0-9]{3})+)\s*원/;
-    const blockedPattern = /captcha|캡차|로봇|봇\s*(?:확인|검증|\(bot\))?|비정상|접근이 제한|접속이 제한|요청이 차단|서비스 이용이 제한|access denied|403|보안문자|잠시만 기다리|원활한 서비스 이용/i;
+    const blockedPattern = /captcha|캡차|로봇|봇\s*(?:확인|검증|\(bot\))?|보안\s*확인|NAVER\s*보안\s*확인|실제 사용자임을 확인|영수증의 가게 위치|비정상|접근이 제한|접속이 제한|접속이 일시적으로 제한|요청이 차단|서비스 이용이 제한|쇼핑 서비스 접속이 일시적으로 제한|외부 이벤트를 통한 접속|원클릭 진단|access denied|403|보안문자|잠시만 기다리|원활한 서비스 이용/i;
 
     if (!document.body) {
       return { blocked: false, items: [] };
@@ -1251,6 +1251,12 @@ async function extractVisibleItems(page, platformName, input, target) {
           'a[href*="item.gmarket.co.kr"]',
           'a[href*="itempage3.auction.co.kr"]',
           'a[href*="www.11st.co.kr/products"]',
+          'a[href*="adcr.naver.com"]',
+          'a[href*="cr.shopping.naver.com"]',
+          'a[href*="search.shopping.naver.com/catalog"]',
+          'a[href*="shopping.naver.com/window-products"]',
+          'a[href*="smartstore.naver.com"]',
+          'a[href*="brand.naver.com"]',
           'a[href*="/goods"]',
           'a[href*="/product"]',
           'a[href*="/Item"]'
@@ -1314,26 +1320,35 @@ async function extractVisibleItems(page, platformName, input, target) {
   }
 
   const specText = specToString(target.spec);
-  const items = rawItems.items.slice(0, 5).map((item, index) => {
+  const isNaverShopping = platformName === "네이버 쇼핑";
+  const brandTerms = brandSearchTerms(input.brand);
+  const modelName = String(input.modelName || input.keyword || "");
+  const modelAliases = modelAliasTerms(modelName);
+  const modelTokens = modelName
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((token) => token.length >= 2);
+  const items = rawItems.items.map((item, index) => {
     const text = [item.productName, item.spec, item.rawText].filter(Boolean).join(" ").toLowerCase();
-    const brandTerms = brandSearchTerms(input.brand);
-    const modelTokens = String(input.modelName || input.keyword || "")
-      .toLowerCase()
-      .split(/\s+/)
-      .filter((token) => token.length >= 2);
     const specMatch =
       text.includes(specText.toLowerCase()) ||
       text.replace(/[^\d]/g, "").includes(specCompact(target.spec));
-    const brandMatch = brandTerms.length ? brandTerms.some((term) => text.includes(term.toLowerCase())) : true;
+    const brandMatch = brandTerms.length ? includesAnyTerm(text, brandTerms) : true;
+    const aliasMatch = includesAnyTerm(text, modelAliases);
     const modelMatchCount = modelTokens.filter((token) => text.includes(token)).length;
-    const modelMatch = !modelTokens.length || modelMatchCount >= Math.min(2, modelTokens.length);
-    const confidence = specMatch && brandMatch && modelMatch ? "high" : specMatch || modelMatch ? "medium" : "low";
+    const modelMatch = aliasMatch || !modelTokens.length || modelMatchCount >= Math.min(2, modelTokens.length);
+    const confidence = specMatch && brandMatch && modelMatch ? "high" : specMatch && (brandMatch || modelMatch) ? "medium" : "low";
 
     if (item.unitPrice < 50000) return null;
     const compactSpec = specCompact(target.spec);
     const hasSpecOrModel = text.replace(/[^\d]/g, "").includes(compactSpec) || modelMatch;
     if (!hasSpecOrModel) return null;
-    if (/무이자|카드|렌탈|타이어\s*교체/.test(item.productName) && !modelMatch) return null;
+    if (/무이자|카드|렌탈|타이어\s*교체|장착권|교환권|공임|휠\s*타이어|중고/.test(item.productName) && !modelMatch) return null;
+    if (isNaverShopping) {
+      if (!specMatch) return null;
+      if (brandTerms.length && !brandMatch && !modelMatch) return null;
+      if ((modelTokens.length || modelAliases.length) && !modelMatch) return null;
+    }
 
     return normalizeItem({
       id: `local-${platformName}-${Date.now()}-${index}`,
@@ -1357,9 +1372,11 @@ async function extractVisibleItems(page, platformName, input, target) {
       selectionText: item.rawText,
       collectedAt: new Date().toISOString(),
       confidence,
-      memo: "로컬 Playwright 브라우저 화면에서 보이는 텍스트를 추출한 후보입니다. 상세 조건은 열린 브라우저에서 확인하세요."
+      memo: isNaverShopping
+        ? "네이버 쇼핑 화면에서 규격과 모델명이 함께 확인된 후보만 추출했습니다. 네이버가 접속 제한 화면을 표시하면 자동 후보를 만들지 않습니다."
+        : "로컬 Playwright 브라우저 화면에서 보이는 텍스트를 추출한 후보입니다. 상세 조건은 열린 브라우저에서 확인하세요."
     });
-  }).filter(Boolean);
+  }).filter(Boolean).slice(0, 5);
 
   return { blocked: false, items };
 }
