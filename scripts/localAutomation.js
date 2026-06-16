@@ -263,6 +263,39 @@ function briefBrowserLaunchError(error) {
   return message.slice(0, 240) || "알 수 없는 실행 오류";
 }
 
+async function waitForNaverShoppingSettled(page, target, timeoutMs = 25000) {
+  const deadline = Date.now() + timeoutMs;
+  const compactSpec = specCompact(target.spec);
+  const readableSpec = specToString(target.spec);
+
+  while (Date.now() < deadline) {
+    const state = await page.evaluate(
+      ({ compactSpecValue, readableSpecValue }) => {
+        const bodyText = (document.body?.innerText || document.body?.textContent || "").replace(/\s+/g, " ").trim();
+        const compactText = bodyText.replace(/[^\d]/g, "");
+        const blocked = /captcha|캡차|로봇|봇\s*(?:확인|검증|\(bot\))?|보안\s*확인|NAVER\s*보안\s*확인|실제 사용자임을 확인|영수증의 가게 위치|비정상|접근이 제한|접속이 제한|접속이 일시적으로 제한|요청이 차단|서비스 이용이 제한|쇼핑 서비스 접속이 일시적으로 제한|외부 이벤트를 통한 접속|원클릭 진단|access denied|403|보안문자|잠시만 기다리|원활한 서비스 이용/i.test(bodyText);
+        const hasSpec = bodyText.includes(readableSpecValue) || compactText.includes(compactSpecValue);
+        const hasPrice = /[0-9]{1,3}(?:,[0-9]{3})+\s*원/.test(bodyText);
+        const hasShoppingResult = /쇼핑|가격비교|상품|구매|리뷰|무료배송|배송비|등록일/.test(bodyText) && hasPrice;
+        return {
+          blocked,
+          hasResult: hasSpec || hasShoppingResult,
+          textLength: bodyText.length
+        };
+      },
+      { compactSpecValue: compactSpec, readableSpecValue: readableSpec }
+    );
+
+    if (!state.blocked && state.hasResult) return "results";
+    if (!state.blocked && state.textLength > 1800) return "loaded";
+
+    await page.waitForTimeout(1200);
+    await page.waitForLoadState("domcontentloaded", { timeout: 5000 }).catch(() => {});
+  }
+
+  return "timeout";
+}
+
 async function openSearchPage(page, platform, input, target) {
   if (platform.platformName === "ABC타이어") {
     return openAbcSearchPage(page, platform, input, target);
@@ -279,7 +312,11 @@ async function openSearchPage(page, platform, input, target) {
   const query = queryFor(input, target.spec);
   const targetUrl = platform.searchUrl(query, input, target);
   await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
-  await page.waitForTimeout(2500);
+  if (platform.platformName === "네이버 쇼핑") {
+    await waitForNaverShoppingSettled(page, target);
+  } else {
+    await page.waitForTimeout(2500);
+  }
   await dismissPopups(page);
   await sortByLowestPrice(page, platform.platformName);
   return targetUrl;
@@ -1574,6 +1611,11 @@ async function collectSpecTarget(context, platform, input, target, jobPath, outp
   try {
     searchUrl = await openSearchPage(page, platform, input, target);
     let extracted = await extractVisibleItems(page, platform.platformName, input, target);
+
+    if (extracted.blocked && platform.platformName === "네이버 쇼핑") {
+      await waitForNaverShoppingSettled(page, target, 15000);
+      extracted = await extractVisibleItems(page, platform.platformName, input, target);
+    }
 
     if (extracted.blocked) {
       extracted = await retryAfterManualUnblock(page, platform, input, target, jobPath, outputPath);
